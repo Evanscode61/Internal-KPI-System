@@ -1,0 +1,40 @@
+import jwt
+from datetime import datetime, timedelta
+from django.conf import settings
+
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = "HS256"
+
+
+def generate_access_token(user):
+    payload = {
+        "type": "access",
+        "user_id": user.id,
+        "username": user.username,
+        "role": user.role.name if user.role else None,
+        "exp": datetime.utcnow() + timedelta(minutes=15),
+        "iat": datetime.utcnow(),
+    }
+
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def generate_refresh_token(user):
+    payload = {
+        "type": "refresh",
+        "user_id": user.id,
+        "exp": datetime.utcnow() + timedelta(minutes=15),
+        "iat": datetime.utcnow(),
+    }
+
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return {"error": "Token expired"}
+    except jwt.InvalidTokenError:
+        return {"error": "Invalid token"}
