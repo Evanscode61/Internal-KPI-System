@@ -12,20 +12,23 @@ class KpiDefinition(BaseModel):
         MONTHLY ='monthly', 'MONTHLY'
         QUARTERLY ='quarterly', 'QUARTERLY'
         YEARLY ='yearly', 'YEARLY'
-    department = models.ForeignKey(Department, on_delete=models.CASCADE)
-    name = models.CharField(max_length=255)
+    department = models.ForeignKey(Department, on_delete=models.CASCADE,null=True,blank=True)
+    kpi_name = models.CharField(max_length=255)
     frequency = models.CharField(choices=Frequency.choices, max_length=20,default=Frequency.MONTHLY)
-    formula = models.ForeignKey('KPIFormula', on_delete=models.PROTECT)
+    kpi_description = models.TextField(blank=True)
+    calculation_type = models.CharField(max_length=50,null=True ,blank=True)
+    weight_value = models.DecimalField(max_digits=5, decimal_places=2,default=0)
+    formula = models.ForeignKey('KPIFormula', on_delete=models.PROTECT,null=True)
     measurement_type = models.CharField(max_length=50,help_text='% ,hours, number')
-    minimum_threshold = models.FloatField(default=0.0)
-    maximum_threshold = models.FloatField(default=0.0)
+    min_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    max_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     status = models.ForeignKey(Status, on_delete=models.CASCADE,null=True)
 
     class Meta:
         db_table = 'kpis'
         ordering = ['-created_at']
     def __str__(self):
-        return f"{self.name} ({self.department.name})"
+        return f"{self.kpi_name} ({self.department.name})"
 
 class KpiAssignment(BaseModel):
     kpi = models.ForeignKey(KpiDefinition, on_delete=models.CASCADE)

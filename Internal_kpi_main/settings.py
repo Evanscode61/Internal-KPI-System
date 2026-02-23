@@ -43,6 +43,8 @@ INSTALLED_APPS = [
     'accounts',
     'Transaction',
     'Base',
+    'services',
+    'api',
 ]
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -55,6 +57,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'accounts.Middleware.JWTAuthenticationMiddleware',
 ]
 
 ROOT_URLCONF = 'Internal_kpi_main.urls'

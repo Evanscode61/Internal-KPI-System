@@ -9,6 +9,9 @@ class Department(BaseModel):
 
     name = models.CharField(max_length=20, choices=Name.choices, unique=True)
     description = models.CharField(max_length=255, blank=True)
+    """line_manager = models.ForeignKey('LineManager',null =True,blank = False,
+                                     on_delete=models.CASCADE,
+                                     verbose_name = 'Line Manager')"""
 
 
 

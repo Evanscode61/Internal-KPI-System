@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-from Base.models import BaseModel, Status
+from Base.models import BaseModel,Status
 from organization.models import Department, Team
 
 
@@ -9,14 +9,7 @@ class User(AbstractUser):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
     team = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True)
     phone_number = models.CharField(max_length=11, blank=True)
-
-    class Status(models.TextChoices):
-        ACTIVE = 'active', 'Active'
-        INACTIVE = 'inactive', 'Inactive'
-        PENDING = 'pending', 'Pending'
-        SUSPENDED = 'suspended', 'Suspended'
-
-    status = models.TextField(choices=Status.choices, default=Status.ACTIVE)
+    status = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True, blank=True)
 
 
     class Meta:
