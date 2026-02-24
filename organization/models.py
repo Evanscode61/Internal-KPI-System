@@ -1,5 +1,7 @@
+import uuid
 from django.db import models
-from Base.models import BaseModel
+from Base.models import BaseModel, Status
+
 
 class Department(BaseModel):
     """Department: TECH or Business."""
@@ -9,6 +11,7 @@ class Department(BaseModel):
 
     name = models.CharField(max_length=20, choices=Name.choices, unique=True)
     description = models.CharField(max_length=255, blank=True)
+    status = models.ForeignKey(Status, on_delete=models.CASCADE, null=True)
     """line_manager = models.ForeignKey('LineManager',null =True,blank = False,
                                      on_delete=models.CASCADE,
                                      verbose_name = 'Line Manager')"""
@@ -22,11 +25,13 @@ class Department(BaseModel):
         return self.get_name_display()
 
 
-class Team(models.Model):
+class Team(BaseModel):
+    """Team: TECH or Business."""
     #Teams within a department.
     department = models.ForeignKey(Department,on_delete=models.CASCADE)
-    team_id = models.AutoField(primary_key=True)
     team_name = models.CharField(max_length=100,null = True,blank = True)
+    status = models.ForeignKey(Status, on_delete=models.CASCADE, null=True)
+
 
 
     class Meta:

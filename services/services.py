@@ -11,9 +11,145 @@ from organization.models import Department, Team
 from services.serviceBase import ServiceBase, service_handler
 from services.utils.response_provider import ResponseProvider
 import json
+#-----------------------------------------------------------------------------
+# TEAM SERVICE
+#----------------------------------------------------------------------------
+
+class TeamService(ServiceBase):
+    manager = Team.objects
+
+    def get_by_uuid(self, team_uuid: str):
+        return self.manager.get(uuid=team_uuid)
+
+    def get_all_teams(self, **filters):
+        qs = self.manager.all()
+        if 'department_uuid' in filters:
+            qs = qs.filter(department__uuid=filters['department_uuid'])
+        return qs
+
+    def create_team(self, team_name, department_uuid, triggered_by: User, request=None):
+        department = DepartmentService().get_by_uuid(department_uuid)
+
+        team = self.manager.create(
+            team_name=team_name,
+            department=department,
+        )
+
+        try:
+            TransactionLogService.log(
+                event_code='team_created',
+                triggered_by=triggered_by,
+                entity=team,
+                status_code='ACT',
+                message=f'Team "{team.team_name}" created under "{department.name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'team_id': str(team.uuid),
+                    'team_name': team.team_name,
+                    'department_id': str(department.uuid),
+                    'department_name': department.name,
+                    'created_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return team
+
+    def update_team(self, team_uuid: str, data: dict, triggered_by: User, request=None):
+        team = self.get_by_uuid(team_uuid)
+
+        old_values = {field: str(getattr(team, field, None)) for field in data}
+
+        # Handle department UUID → FK resolution separately
+        if 'department_uuid' in data:
+            team.department = DepartmentService().get_by_uuid(data.pop('department_uuid'))
+
+        for field, value in data.items():
+            setattr(team, field, value)
+        team.save()
+
+        try:
+            TransactionLogService.log(
+                event_code='team_updated',
+                triggered_by=triggered_by,
+                entity=team,
+                status_code='ACT',
+                message=f'Team "{team.team_name}" updated',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'team_id': str(team.uuid),
+                    'team_name': team.team_name,
+                    'updated_by': triggered_by.email,
+                    'changed_fields': list(data.keys()),
+                    'old_values': old_values,
+                    'new_values': {k: str(v) for k, v in data.items()},
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return team
+
+    def delete_team(self, team_uuid: str, triggered_by: User, request=None):
+        team = self.get_by_uuid(team_uuid)
+        team.delete()
+
+        try:
+            TransactionLogService.log(
+                event_code='team_deleted',
+                triggered_by=triggered_by,
+                entity=team,
+                status_code='ACT',
+                message=f'Team "{team.team_name}" deleted',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'team_name': team.team_name,
+                    'deleted_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return team
+
+    def assign_user(self, user_uuid: str, team_uuid: str, triggered_by: User, request=None):
+        user = User.objects.get(uuid=user_uuid)
+        team = self.get_by_uuid(team_uuid)
+
+        user.team       = team
+        user.department = team.department
+        user.save(update_fields=['team', 'department'])
+
+        try:
+            TransactionLogService.log(
+                event_code='user_assigned_to_team',
+                triggered_by=triggered_by,
+                entity=user,
+                status_code='ACT',
+                message=f'{user.email} assigned to team "{team.team_name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'user_id': str(user.uuid),
+                    'user_email': user.email,
+                    'team_id': str(team.uuid),
+                    'team_name': team.team_name,
+                    'department_name': team.department.name if team.department else None,
+                    'assigned_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return team
+#----------------------------------------------------------------
+# DEPARTMENT SERVICE
+#-----------------------------------------------------------------
 
 class DepartmentService(ServiceBase):
     manager = Department.objects
+    """service that handles business logic related to departments, that is creation, updating 
+    retrieving and deleting departments."""
 
     def get_all_departments(self):
             return self.manager.all()
@@ -26,7 +162,80 @@ class DepartmentService(ServiceBase):
             name=name,
             description=description,
         )
+        try:
+            TransactionLogService.log(
+                event_code='department_created',
+                triggered_by=triggered_by,
+                entity=department,
+                status_code='ACT',
+                message=f'Department "{department.name}" created',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'department_id': str(department.uuid),
+                    'department_name': department.name,
+                    'created_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
         return department
+
+    def update_department(self, dept_uuid: str, data: dict, triggered_by: User, request=None):
+        department = self.get_by_uuid(dept_uuid)
+
+        old_values = {field: str(getattr(department, field, None)) for field in data}
+
+        for field, value in data.items():
+            setattr(department, field, value)
+        department.save(update_fields=list(data.keys()))
+
+        try:
+            TransactionLogService.log(
+                event_code='department_updated',
+                triggered_by=triggered_by,
+                entity=department,
+                status_code='ACT',
+                message=f'Department "{department.name}" updated',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'department_id': str(department.uuid),
+                    'department_name': department.name,
+                    'updated_by': triggered_by.email,
+                    'changed_fields': list(data.keys()),
+                    'old_values': old_values,
+                    'new_values': {k: str(v) for k, v in data.items()},
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return department
+
+    def delete_department(self, dept_uuid: str, triggered_by: User, request=None):
+        department = self.get_by_uuid(dept_uuid)
+        department.delete()
+
+        try:
+            TransactionLogService.log(
+                event_code='department_deleted',
+                triggered_by=triggered_by,
+                entity=department,
+                status_code='ACT',
+                message=f'Department "{department.name}" deleted',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'department_name': department.name,
+                    'deleted_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return department
+
+
+
 #----------------------------------------------------------------
 #  KPI DEFINITION SERVICE
 #----------------------------------------------------------------
@@ -295,11 +504,7 @@ class TransactionLogService(ServiceBase):
         ).select_related('event_type', 'status')
 
 
-class TeamService(ServiceBase):
-    manager = Team
 
-    def get_by_uuid(self, team_uuid: str):
-        return self.manager.get(uuid=team_uuid)
 
 class KPIResultsService(ServiceBase):
     manager = KPIResults.objects
