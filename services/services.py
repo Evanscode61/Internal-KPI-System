@@ -4,7 +4,7 @@ from django.contrib.auth.hashers import make_password, check_password
 
 import kpis
 from Base.models import Status
-from accounts.models import User, Role
+from accounts.models import User, Role ,RefreshToken
 from kpis.models import KpiDefinition, KpiAssignment,KPIResults,KPIFormula
 from Transaction.models import TransactionLog, EventTypes
 from organization.models import Department, Team
@@ -27,6 +27,7 @@ class TeamService(ServiceBase):
             qs = qs.filter(department__uuid=filters['department_uuid'])
         return qs
 
+    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def create_team(self, team_name, department_uuid, triggered_by: User, request=None):
         department = DepartmentService().get_by_uuid(department_uuid)
 
@@ -56,6 +57,7 @@ class TeamService(ServiceBase):
 
         return team
 
+    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def update_team(self, team_uuid: str, data: dict, triggered_by: User, request=None):
         team = self.get_by_uuid(team_uuid)
 
@@ -91,6 +93,7 @@ class TeamService(ServiceBase):
 
         return team
 
+    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def delete_team(self, team_uuid: str, triggered_by: User, request=None):
         team = self.get_by_uuid(team_uuid)
         team.delete()
@@ -157,6 +160,7 @@ class DepartmentService(ServiceBase):
     def get_by_uuid(self, dept_uuid: str):
             return self.manager.get(uuid=dept_uuid)
 
+    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def create_department(self, name, description='', triggered_by: User = None, request=None):
         department = self.manager.create(
             name=name,
@@ -181,6 +185,7 @@ class DepartmentService(ServiceBase):
 
         return department
 
+    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def update_department(self, dept_uuid: str, data: dict, triggered_by: User, request=None):
         department = self.get_by_uuid(dept_uuid)
 
@@ -212,6 +217,7 @@ class DepartmentService(ServiceBase):
 
         return department
 
+    @service_handler(require_auth=True, allowed_roles=["admin",])
     def delete_department(self, dept_uuid: str, triggered_by: User, request=None):
         department = self.get_by_uuid(dept_uuid)
         department.delete()
@@ -283,9 +289,12 @@ class KPIService(ServiceBase):
             setattr(kpi, field, value)
         kpi.save()
 
+
     def delete_kpi(self, kpi_uuid: str, triggered_by: User, request=None):
         kpi = self.get_by_uuid(kpi_uuid)
         kpi.delete()
+        return kpi
+
 
     def get_all_kpis(self, **filters):
         qs = self.manager.all()
@@ -314,10 +323,11 @@ class KPIAssignmentService(ServiceBase):
       Handles business logic related to assigning KPIs to users, teams, or departments.
       """
 
+    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
     def get_by_uuid(self, assignment_uuid: str):
         return self.manager.get(uuid=assignment_uuid)
 
-
+    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
     def create_kpi_assignment(self, kpi_uuid, assigned_period, assigned_to_uuid=None,
                           assigned_team_uuid=None, assigned_department_uuid=None,
                           status='active', triggered_by: User = None, request=None):
@@ -368,6 +378,7 @@ class KPIAssignmentService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
+    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
     def update_assignment(self, assignment_uuid: str, data: dict, triggered_by: User, request=None):
         assignment = self.get_by_uuid(assignment_uuid)
         """
@@ -410,6 +421,7 @@ class KPIAssignmentService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
+    @service_handler(require_auth=True, allowed_roles=["admin","Business Line manager","Tech Line manager"])
     def get_all_assignments(self, **filters):
         """
         Retrieve assignments with optional filtering.
@@ -456,6 +468,7 @@ class KPIAssignmentService(ServiceBase):
 
 class TransactionLogService(ServiceBase):
     manager = TransactionLog.objects
+    """Keeps track of transaction logs."""
 
     @staticmethod
     def log(
@@ -511,6 +524,92 @@ class KPIResultsService(ServiceBase):
 
 class KPIFormulaService(ServiceBase):
     manager = KPIFormula.objects
+    """
+    Service layer responsible for managing KPI formula operations.
+    Handles retrieval, creation, and updating of KPIFormula records.
+    Also logs all create and update operations via TransactionLogService
+    for audit and traceability purposes.
+    """
+
+
+    def get_by_uuid(self, formula_uuid: str):
+        """Retrieves a KPI formula by its UUID."""
+        return self.manager.get(uuid=formula_uuid)
+
+    def get_by_kpi_uuid(self, kpi_uuid: str):
+        """
+             Retrieve a KPI formula associated with a specific KPI UUID."""
+        return self.manager.get(kpi__uuid=kpi_uuid)
+
+    def create_formula(self, kpi_uuid, formula_expression, data_source='',
+                       triggered_by: User = None, request=None):
+        kpi = KPIService().get_by_uuid(kpi_uuid)
+
+        formula = self.manager.create(
+            kpi=kpi,
+            formula_expression=formula_expression,
+            data_source=data_source,
+        )
+
+        try:
+            TransactionLogService.log(
+                event_code='kpi_formula_created',
+                triggered_by=triggered_by,
+                entity=formula,
+                status_code='ACT',
+                message=f'Formula created for KPI "{kpi.kpi_name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'formula_id': str(formula.uuid),
+                    'kpi_id': str(kpi.uuid),
+                    'kpi_name': kpi.kpi_name,
+                    'data_source': data_source,
+                    'created_by': triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return formula
+
+    def update_formula(self, formula_uuid: str, data: dict, triggered_by: User, request=None):
+        """
+                Update an existing KPI formula.
+                This method:
+                - Retrieves the formula by UUID
+                - Updates allowed fields dynamically
+                - Tracks old and new values for auditing
+                - Logs the update operation in the transaction log system"""
+
+        formula = self.get_by_uuid(formula_uuid)
+
+        old_values = {field: str(getattr(formula, field, None)) for field in data}
+
+        for field, value in data.items():
+            setattr(formula, field, value)
+        formula.save(update_fields=list(data.keys()))
+
+        try:
+            TransactionLogService.log(
+                event_code='kpi_formula_updated',
+                triggered_by=triggered_by,
+                entity=formula,
+                status_code='ACT',
+                message=f'Formula updated for KPI "{formula.kpi.kpi_name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'formula_id': str(formula.uuid),
+                    'kpi_name': formula.kpi.kpi_name,
+                    'updated_by': triggered_by.email,
+                    'changed_fields': list(data.keys()),
+                    'old_values': old_values,
+                    'new_values': {k: str(v) for k, v in data.items()},
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return formula
 
 
 class UserService(ServiceBase):
@@ -529,6 +628,23 @@ class UserService(ServiceBase):
             role=role,
             is_active=True
         )
+
+
+
+
+    @staticmethod
+    def delete_user(username: str):
+        """
+        Delete a user  by username and returns response provider if
+        user doesn't exist, returns success if user is deleted successfully.
+        """
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return ResponseProvider.not_found(error=f"User '{username}' not found")
+
+        user.delete()
+        return ResponseProvider.success(message=f"User '{username}' deleted successfully")
 
     def authenticate_user(self, email, password):
         user = self.filter(email=email).first()
@@ -614,72 +730,84 @@ class UserService(ServiceBase):
         return user
 
 class RoleService(ServiceBase):
-    manager = Role
+    manager = Role.objects
 
-    class RoleService:
+    @staticmethod
+    @service_handler(require_auth=True, allowed_roles=["admin"])
+    def update_user_role(request, username, new_role):
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return ResponseProvider.not_found(error="User not found")
 
-        @staticmethod
-        @service_handler(require_auth=True, allowed_roles=["admin"])
-        def update_user_role(request, username, new_role):
-            try:
-                user = User.objects.get(username=username)
-            except User.DoesNotExist:
-                return ResponseProvider.not_found(error="User not found")
+        user.role = new_role
+        user.save(update_fields=["role"])
 
-            user.role = new_role
-            user.save(update_fields=["role"])
+        data = {
+            "username": user.username,
+            "email": user.email,
+            "role": user.role
+        }
 
-            data = {
-                "username": user.username,
-                "email": user.email,
-                "role": user.role
-            }
-
-            return ResponseProvider.success(
+        return ResponseProvider.success(
                 message="User role updated successfully",
                 data=data
             )
 
+    def delete_role_by_name(self, name: str) -> None:
+        """
+        Delete a role using its name.
+        Args:
+            name (str): Name of the role.
+        Raises:
+            LookupError: If the role does not exist.
+        """
+        try:
+            role = self.manager.get(name=name)
+        except self.manager.model.DoesNotExist:
+            raise LookupError(f"Role '{name}' not found")
+        role.delete()
 
+    @staticmethod
+    def get_all_roles(self):
+        """
+        Retrieve all roles.
+        Returns:
+            list[Role]: List of Role objects.
+        """
+        return list(self.manager.all())
 
 class AuthService:
+    manager = RefreshToken.objects
+    """
+    Service responsible for authentication related actions.
+    """
+
     @staticmethod
-    def logout(refresh_token):
-        try:
-            token = RefreshToken.objects.get(token=refresh_token)
-            token.delete()
-        except RefreshToken.DoesNotExist:
-            raise LookupError("Invalid refresh token")
-
-#password management
-""" 
-    def deactivate_user(self, uuid):
-        return self.update(uuid=uuid, is_active=False)
-class ForgotPassword:
-    objects = None
-
-    def forgot_password(self, email):
-        user = self.filter(email=email).first()
-        if not user:
-            raise ValueError("User not found")
-
-        reset_token = str(uuid.uuid4())
-
-        ForgotPassword.objects.create(
-            user=user,
-            token=reset_token,
-            created_at=timezone.now()
-        )
-
-        return reset_token
+    def logout(refresh_token: str) -> None:
         """
-#status of the account
-"""
-    def deactivate_user(self, uuid):
-        return self.update(uuid=uuid, is_active=False)
+        Invalidate a refresh token.
 
-    def activate_user(self, uuid):
-        return self.update(uuid=uuid, is_active=True)"""
+        Args:
+            refresh_token (str): The refresh token sent by the client.
+
+        Raises:
+            LookupError: If the token does not exist.
+        """
+        token = RefreshToken.objects.filter(token=refresh_token).first()
+
+        if not token:
+            raise LookupError("Token not found")
+
+        token.delete()
+
+
+
+
+
+
+
+
 
 
 
