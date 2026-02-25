@@ -539,7 +539,7 @@ class KPIFormulaService(ServiceBase):
     def get_by_kpi_uuid(self, kpi_uuid: str):
         """
              Retrieve a KPI formula associated with a specific KPI UUID."""
-        return self.manager.get(kpi__uuid=kpi_uuid)
+        return self.manager.filter(kpi__uuid=kpi_uuid)
 
     def create_formula(self, kpi_uuid, formula_expression, data_source='',
                        triggered_by: User = None, request=None):
@@ -609,6 +609,18 @@ class KPIFormulaService(ServiceBase):
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
 
+        return formula
+
+    def delete_formula(self, formula_uuid: str, triggered_by: User, request=None):
+        """
+        Delete an existing KPI formula.
+        This method:
+        - Retrieves the formula by UUID
+        - Stores the formula name before deletion
+        - Deletes the formula from the database
+        """
+        formula = self.get_by_uuid(formula_uuid)
+        formula.delete()
         return formula
 
 

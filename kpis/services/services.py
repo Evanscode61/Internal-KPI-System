@@ -1,6 +1,6 @@
 from Transaction.services.services import TransactionLogHandler
 from utils.common import get_clean_request_data
-from services.services import KPIService, KPIAssignmentService, TransactionLogService
+from services.services import KPIService, KPIAssignmentService, TransactionLogService, KPIFormulaService
 from services.utils.response_provider import ResponseProvider
 
 
@@ -31,17 +31,18 @@ class KPIDefinitionHandler:
             max_threshold=data.get('max_threshold'),
             triggered_by=request.user,
         )
+        kpi_data =cls._serialize(kpi)
 
         return ResponseProvider.created(
             message=f"{kpi.kpi_name} created successfully",
-            data=cls._serialize(kpi)
+            data= kpi_data
         )
 
     @staticmethod
-    def _serialize(kpi):
+    def _serialize(kpi ):
         return {
-            "uuid": str(kpi.uuid),
-            "kpi_name": kpi.kpi_name,
+           "uuid": str(kpi.uuid),
+           "kpi_name": kpi.kpi_name,
             "kpi_description": kpi.kpi_description,
             "department": kpi.department.name if kpi.department else None,
             "measurement_type": kpi.measurement_type,
@@ -97,7 +98,6 @@ class KPIDefinitionHandler:
         kpi = service.delete_kpi(
             kpi_uuid,
             triggered_by=request.user,
-            request=request
         )
         return ResponseProvider.success(message=f"{kpi.kpi_name} deleted successfully")
 
@@ -151,6 +151,7 @@ class KPIAssignmentHandler:
 
     @classmethod
     def update_kpi_assignment(cls, request, assignment_uuid: str) -> ResponseProvider:
+        """update a KPI assignment by UUID."""
         data = get_clean_request_data(
             request,
             allowed_fields={'assigned_period', 'status'}
@@ -166,7 +167,9 @@ class KPIAssignmentHandler:
             message="Assignment updated successfully",
             data=cls._serialize(assignment)
         )
+    @classmethod
     def get_all_kpi_assignments(cls ,request):
+
         filters = {
             'user_uuid': request.GET.get('user_uuid'),
             'team_uuid': request.GET.get('team_uuid'),
@@ -198,5 +201,89 @@ class KPIAssignmentHandler:
             'created_at': str(assignment.created_at),
             'updated_at': str(assignment.updated_at),
         }
+
+
+
+class KPIFormulaServiceHandler:
+
+    @classmethod
+    def create_formula(cls, request) -> ResponseProvider:
+        data = get_clean_request_data(
+            request,
+            required_fields={'kpi_uuid', 'formula_expression'}
+        )
+
+        kpi_uuid           = data.get('kpi_uuid')
+        formula_expression = data.get('formula_expression')
+
+        formula = KPIFormulaService().create_formula(
+            kpi_uuid,
+            formula_expression,
+            data_source=data.get('data_source', ''),
+            triggered_by=request.user,
+            request=request
+        )
+
+        return ResponseProvider.created(
+            message=f"Formula for KPI created successfully",
+            data=cls._serialize(formula)
+        )
+
+    @classmethod
+    def get_formula_by_kpi(cls, kpi_uuid: str) -> ResponseProvider:
+        """
+           Retrieve a formula by its associated KPI UUID.
+           Args:
+               kpi_uuid (str): UUID of the KPI.
+           Returns:
+               ResponseProvider: 200 Success with serialized formula data.
+           """
+        formula = KPIFormulaService().get_by_kpi_uuid(kpi_uuid)
+        return ResponseProvider.success(data=cls._serialize(formula))
+
+    @classmethod
+    def update_formula(cls, request, formula_uuid: str) -> ResponseProvider:
+        data = get_clean_request_data(
+            request,
+            allowed_fields={'formula_expression', 'data_source'}
+        )
+
+        formula = KPIFormulaService().update_formula(
+            formula_uuid,
+            data,
+            triggered_by=request.user,
+            request=request
+        )
+        return ResponseProvider.success(
+            message="Formula updated successfully",
+            data=cls._serialize(formula)
+        )
+
+    """
+        Converting a KPIFormula Django model → JSON-safe dictionary
+    """
+    @staticmethod
+    def _serialize(formula) -> dict:
+        return {
+            'uuid': str(formula.uuid),
+            'kpi_uuid': str(formula.kpi.uuid),
+            'kpi_name': formula.kpi.kpi_name,
+            'formula_expression': formula.formula_expression,
+            'data_source': formula.data_source,
+            'created_at': str(formula.created_at),
+            'updated_at': str(formula.updated_at),
+        }
+
+    @classmethod
+    def delete_formula(cls, request, formula_uuid: str) -> ResponseProvider:
+        formula = KPIFormulaService().delete_formula(
+            formula_uuid,
+            triggered_by=request.user,
+            request=request
+        )
+        return ResponseProvider.success(
+            message=f"Formula {formula.formula_name} deleted successfully",
+        )
+
 
 
