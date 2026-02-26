@@ -1,16 +1,20 @@
 from ipaddress import ip_address
 
+from ipaddress import ip_address
 from django.contrib.auth.hashers import make_password, check_password
+from django.contrib.auth import get_user_model
 
 import kpis
 from Base.models import Status
-from accounts.models import User, Role ,RefreshToken
-from kpis.models import KpiDefinition, KpiAssignment,KPIResults,KPIFormula
+from accounts.models import Role, RefreshToken
+from kpis.models import KpiDefinition, KpiAssignment, KPIResults, KPIFormula
 from Transaction.models import TransactionLog, EventTypes
 from organization.models import Department, Team
 from services.serviceBase import ServiceBase, service_handler
 from services.utils.response_provider import ResponseProvider
 import json
+
+User = get_user_model()
 #-----------------------------------------------------------------------------
 # TEAM SERVICE
 #----------------------------------------------------------------------------
@@ -323,14 +327,14 @@ class KPIAssignmentService(ServiceBase):
       Handles business logic related to assigning KPIs to users, teams, or departments.
       """
 
-    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
+
     def get_by_uuid(self, assignment_uuid: str):
         return self.manager.get(uuid=assignment_uuid)
 
-    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
-    def create_kpi_assignment(self, kpi_uuid, assigned_period, assigned_to_uuid=None,
+
+    def create_kpi_assignment(self, kpi_uuid, period_start, assigned_to_uuid=None,
                           assigned_team_uuid=None, assigned_department_uuid=None,
-                          status='active', triggered_by: User = None, request=None):
+                          status=None, triggered_by: User = None, request=None):
         kpi = KPIService().get_by_uuid(kpi_uuid)
         """
         Creates a KPI assignment for a user, team, or department for a given period.
@@ -350,7 +354,7 @@ class KPIAssignmentService(ServiceBase):
             assigned_to=assigned_to,
             assigned_team=assigned_team,
             assigned_department=assigned_department,
-            assigned_period=assigned_period,
+            period_start=period_start,
             status=status,
         )
         try:
@@ -367,7 +371,7 @@ class KPIAssignmentService(ServiceBase):
                     'assigned_to' : assigned_to.role if assigned_to else None,
                     'assigned_team' : assigned_team.team_name if assigned_team else None,
                     'assigned_department' : assigned_department.name if assigned_department else None,
-                    'assigned_period' : str(assigned_period),
+                    'period_start' : str(period_start),
                     'assigned_by': triggered_by.role,
 
 
@@ -378,7 +382,7 @@ class KPIAssignmentService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
-    @service_handler(require_auth=True, allowed_roles=["admin", "Business Line manager", "Tech Line manager"])
+
     def update_assignment(self, assignment_uuid: str, data: dict, triggered_by: User, request=None):
         assignment = self.get_by_uuid(assignment_uuid)
         """
@@ -421,7 +425,7 @@ class KPIAssignmentService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
-    @service_handler(require_auth=True, allowed_roles=["admin","Business Line manager","Tech Line manager"])
+
     def get_all_assignments(self, **filters):
         """
         Retrieve assignments with optional filtering.
@@ -518,9 +522,215 @@ class TransactionLogService(ServiceBase):
 
 
 
+from simpleeval import simple_eval
+from django.contrib.auth.models import User
 
-class KPIResultsService(ServiceBase):
+
+class KPIResultAccountService(ServiceBase):
     manager = KPIResults.objects
+    """ Service layer responsible for all business logic related to KPI Results.
+            This service handles the full lifecycle of a KPI result — from submission
+            and score calculation to updating, retrieving, and exporting results.
+            It acts as the bridge between the views/handlers and the database,
+            ensuring that all results are scored automatically using the active
+            formula linked to each KPI."""
+
+    def get_by_uuid(self, result_uuid: str):
+        return self.manager.get(uuid=result_uuid)
+
+    def get_all_results(self, **filters):
+        qs = self.manager.all()
+        if 'user_uuid' in filters:
+            qs = qs.filter(kpi_assignment__assigned_to__uuid=filters['user_uuid'])
+        if 'team_uuid' in filters:
+            qs = qs.filter(kpi_assignment__assigned_team__uuid=filters['team_uuid'])
+        if 'department_uuid' in filters:
+            qs = qs.filter(kpi_assignment__assigned_department__uuid=filters['department_uuid'])
+        if 'period_start' in filters:
+            qs = qs.filter(recorded_at__gte=filters['period_start'])
+        if 'period_end' in filters:
+            qs = qs.filter(recorded_at__lte=filters['period_end'])
+        return qs
+
+    @staticmethod
+    def _get_active_formula(kpi):
+        """Fetch the active formula linked to this KPI."""
+        return kpi.formula.filter(status__name='active').first()
+
+    @staticmethod
+    def _calculate_score(actual_value, kpi, formula=None):
+        """
+        Dynamically evaluate the formula expression linked to the KPI.
+        Falls back to default formula if none is found.
+        """
+        try:
+            actual = float(actual_value)
+            target = float(kpi.max_threshold) if kpi.max_threshold else 1
+            weight = float(kpi.weight_value) if kpi.weight_value else 1.0
+
+            if formula and formula.formula_expression:
+                context = {
+                    'actual':        actual,
+                    'target':        target,
+                    'weight':        weight,
+                    'min_threshold': float(kpi.min_threshold) if kpi.min_threshold else 0,
+                    'max_threshold': float(kpi.max_threshold) if kpi.max_threshold else 1,
+                }
+                score = simple_eval(formula.formula_expression, names=context)
+            else:
+                # fallback if no active formula found
+                max_t = target or actual or 1
+                score = (actual / max_t) * 100 * weight
+
+            return round(float(score), 4)
+
+        except Exception as e:
+            print(f"[Formula Calculation ERROR] {e}")
+            return None
+
+    @staticmethod
+    def _derive_comment(score, formula=None):
+        """
+        Derive rating label from score using formula thresholds if available,
+        otherwise fall back to default thresholds.
+        """
+        if score is None:
+            return ''
+
+        score        = float(score)
+        outstanding  = float(formula.outstanding_threshold) if formula and formula.outstanding_threshold else 90
+        good         = float(formula.good_threshold) if formula and formula.good_threshold else 75
+        satisfactory = float(formula.satisfactory_threshold) if formula and formula.satisfactory_threshold else 60
+        needs_imp    = float(formula.needs_improvement_threshold) if formula and formula.needs_improvement_threshold else 40
+
+        if score >= outstanding:  return 'outstanding'
+        if score >= good:         return 'good'
+        if score >= satisfactory: return 'satisfactory'
+        if score >= needs_imp:    return 'needs_improvement'
+        return 'poor'
+
+    @staticmethod
+    def _build_result_response(result):
+        """Build a clean response dict to return to the user after submission."""
+        return {
+            'result_uuid':       str(result.uuid),
+            'kpi_name':          result.kpi_assignment.kpi.kpi_name,
+            'actual_value':      str(result.actual_value),
+            'calculated_score':  str(result.calculated_score),
+            'rating':            result.comment,
+            'recorded_by':       result.recorded_by.email,
+        }
+
+    def create_result(self, assignment_uuid: str, actual_value, triggered_by: User, request=None):
+
+        assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
+        kpi = assignment.kpi
+
+        formula = self._get_active_formula(kpi)
+        calculated_score = self._calculate_score(actual_value, kpi, formula)
+        rating = self._derive_comment(calculated_score, formula)  #  maps to rating field
+
+        result = self.manager.create(
+            kpi_assignment=assignment,
+            actual_value=actual_value,
+            calculated_score=calculated_score,
+            rating=rating,  # correct field
+            recorded_by=triggered_by,
+        )
+
+        try:
+            TransactionLogService.log(
+                event_code='kpi_result_submitted',
+                triggered_by=triggered_by,
+                entity=result,
+                status_code='ACT',
+                message=f'Result submitted for KPI "{kpi.kpi_name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'result_id':        str(result.uuid),
+                    'kpi_name':         kpi.kpi_name,
+                    'assignment_id':    str(assignment.uuid),
+                    'actual_value':     str(actual_value),
+                    'calculated_score': str(calculated_score),
+                    'comment':          comment,
+                    'formula_used':     formula.formula_name if formula else 'default',
+                    'submitted_by':     triggered_by.email,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return self._build_result_response(result)
+
+    def update_result(self, result_uuid: str, data: dict, triggered_by: User, request=None):
+        result = self.get_by_uuid(result_uuid)
+        kpi    = result.kpi_assignment.kpi
+
+        old_values = {'actual_value': str(result.actual_value)}
+
+        if 'actual_value' in data:
+            formula                 = self._get_active_formula(kpi)
+            result.actual_value     = data['actual_value']
+            result.calculated_score = self._calculate_score(data['actual_value'], kpi, formula)
+            result.comment          = self._derive_comment(result.calculated_score, formula)
+
+        result.save(update_fields=['actual_value', 'calculated_score', 'comment'])
+
+        try:
+            TransactionLogService.log(
+                event_code='kpi_result_updated',
+                triggered_by=triggered_by,
+                entity=result,
+                status_code='ACT',
+                message=f'Result updated for KPI "{kpi.kpi_name}"',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'result_id':  str(result.uuid),
+                    'kpi_name':   kpi.kpi_name,
+                    'updated_by': triggered_by.email,
+                    'old_values': old_values,
+                    'new_values': {
+                        'actual_value':     str(result.actual_value),
+                        'calculated_score': str(result.calculated_score),
+                        'comment':          result.comment,
+                    },
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        return self._build_result_response(result)
+
+    def export_csv(self, **filters):
+        import csv, io
+        from django.http import HttpResponse
+
+        qs = self.get_all_results(**filters).select_related(
+            'kpi_assignment__kpi',
+            'kpi_assignment__assigned_to',
+            'recorded_by',
+        )
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'uuid', 'kpi_name', 'assigned_to', 'actual_value',
+            'calculated_score', 'rating', 'recorded_at', 'recorded_by',
+        ])
+        for r in qs:
+            writer.writerow([
+                str(r.uuid),
+                r.kpi_assignment.kpi.kpi_name,
+                r.kpi_assignment.assigned_to.email if r.kpi_assignment.assigned_to else '',
+                r.actual_value,
+                r.calculated_score,
+                r.comment,
+                r.recorded_by.email if r.recorded_by else '',
+            ])
+
+        response = HttpResponse(output.getvalue(), content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename=kpi_results.csv'
+        return response
 
 class KPIFormulaService(ServiceBase):
     manager = KPIFormula.objects
@@ -539,7 +749,7 @@ class KPIFormulaService(ServiceBase):
     def get_by_kpi_uuid(self, kpi_uuid: str):
         """
              Retrieve a KPI formula associated with a specific KPI UUID."""
-        return self.manager.filter(kpi__uuid=kpi_uuid)
+        return self.manager.filter(kpi__uuid=kpi_uuid).first()
 
     def create_formula(self, kpi_uuid, formula_expression, data_source='',
                        triggered_by: User = None, request=None):
@@ -625,7 +835,11 @@ class KPIFormulaService(ServiceBase):
 
 
 class UserService(ServiceBase):
-    manager = User.objects
+
+    @property
+    def manager(self):
+        User = get_user_model()
+        return User.objects
 
     def register_user(self, username, email, password, role_name=None):
         if self.filter(email=email).exists():

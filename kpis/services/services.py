@@ -1,6 +1,7 @@
 from Transaction.services.services import TransactionLogHandler
 from utils.common import get_clean_request_data
-from services.services import KPIService, KPIAssignmentService, TransactionLogService, KPIFormulaService
+from services.services import KPIService, KPIAssignmentService, TransactionLogService, KPIFormulaService, \
+    KPIResultAccountService
 from services.utils.response_provider import ResponseProvider
 
 
@@ -127,19 +128,19 @@ class KPIAssignmentHandler:
         """create a new KPI assignment"""
         data = get_clean_request_data(
             request,
-            required_fields={'kpi_uuid', 'assigned_period'}
+            required_fields={'kpi_uuid', 'period_start'}
         )
 
         kpi_uuid = data.get('kpi_uuid')
-        assigned_period = data.get('assigned_period')
+        period_start= data.get('period_start')
 
         assignment = KPIAssignmentService().create_kpi_assignment(
             kpi_uuid,
-            assigned_period,
+            period_start,
             assigned_to_uuid=data.get('assigned_to_uuid'),
             assigned_team_uuid=data.get('assigned_team_uuid'),
             assigned_department_uuid=data.get('assigned_department_uuid'),
-            status=data.get('status', 'active'),
+            status=data.get('status', ),
             triggered_by=request.user,
             request=request
         )
@@ -154,7 +155,7 @@ class KPIAssignmentHandler:
         """update a KPI assignment by UUID."""
         data = get_clean_request_data(
             request,
-            allowed_fields={'assigned_period', 'status'}
+            allowed_fields={'period_start', 'status'}
         )
 
         assignment = KPIAssignmentService().update_assignment(
@@ -196,8 +197,9 @@ class KPIAssignmentHandler:
             'assigned_department_uuid': str(
                 assignment.assigned_department.uuid) if assignment.assigned_department else None,
             'assigned_department_name': assignment.assigned_department.name if assignment.assigned_department else None,
-            'assigned_period': str(assignment.assigned_period),
-            'status': assignment.status,
+            'period_start': str(assignment.period_start) if assignment.period_start else None,
+            'period_end': str(assignment.period_end) if assignment.period_end else None,
+            'status': assignment.status.name if assignment.status else None,
             'created_at': str(assignment.created_at),
             'updated_at': str(assignment.updated_at),
         }
@@ -284,6 +286,104 @@ class KPIFormulaServiceHandler:
         return ResponseProvider.success(
             message=f"Formula {formula.formula_name} deleted successfully",
         )
+
+class KPIResultService:
+
+    @classmethod
+    def submit_result(cls, request) -> ResponseProvider:
+        """A user or system submits an actual_value for a KPI assignment."""
+        data = get_clean_request_data(
+            request,
+            required_fields={'assignment_uuid', 'actual_value'}
+        )
+
+        result = KPIResultAccountService().create_result(
+            data.get('assignment_uuid'),
+            data.get('actual_value'),
+            triggered_by=request.user,
+            request=request
+        )
+
+        return ResponseProvider.created(
+            message="KPI result submitted successfully",
+            data=cls._serialize(result)
+        )
+
+    @classmethod
+    def get_result(cls, request, result_uuid: str) -> ResponseProvider:
+        result = KPIResultAccountService().get_by_uuid(result_uuid)
+
+        if request.user.role.name.lower() == 'employee':
+            if result.kpi_assignment.assigned_to != request.user:
+                return ResponseProvider.forbidden(
+                    message='You do not have permission to view this result'
+                )
+
+        return ResponseProvider.success(data=cls._serialize(result))
+
+    @classmethod
+    def get_all_results(cls, request) -> ResponseProvider:
+        filters = {
+            'user_uuid':       request.GET.get('user_uuid'),
+            'team_uuid':       request.GET.get('team_uuid'),
+            'department_uuid': request.GET.get('department_uuid'),
+            'period_start':    request.GET.get('period_start'),
+            'period_end':      request.GET.get('period_end'),
+        }
+        filters = {k: v for k, v in filters.items() if v is not None}
+
+        if request.user.user_role == 'employee':
+            filters['user_uuid'] = str(request.user.uuid)
+
+        results = KPIResultAccountService().get_all_results(**filters)
+        return ResponseProvider.success(data=[cls._serialize(r) for r in results])
+
+    @classmethod
+    def update_result(cls, request, result_uuid: str) -> ResponseProvider:
+        data = get_clean_request_data(
+            request,
+            allowed_fields={'actual_value'}
+        )
+
+        result = KPIResultAccountService().update_result(
+            result_uuid,
+            data,
+            triggered_by=request.user,
+            request=request
+        )
+        return ResponseProvider.success(
+            message="KPI result updated successfully",
+            data=cls._serialize(result)
+        )
+
+    @staticmethod
+    def export_results_csv(request) -> ResponseProvider:
+        filters = {
+            'department_uuid': request.GET.get('department_uuid'),
+            'team_uuid':       request.GET.get('team_uuid'),
+            'period_start':    request.GET.get('period_start'),
+            'period_end':      request.GET.get('period_end'),
+        }
+        filters = {k: v for k, v in filters.items() if v is not None}
+        return KPIResultAccountService().export_csv(**filters)
+
+    @staticmethod
+    def _serialize(result) -> dict:
+        return {
+            'uuid': str(result.uuid),
+            'assignment_uuid': str(result.kpi_assignment.uuid),
+            'kpi_name': result.kpi_assignment.kpi.kpi_name,
+            'assigned_to_uuid': str(
+                result.kpi_assignment.assigned_to.uuid) if result.kpi_assignment.assigned_to else None,
+            'assigned_to_username': result.kpi_assignment.assigned_to.username if result.kpi_assignment.assigned_to else None,
+            'actual_value': str(result.actual_value),
+            'calculated_score': str(result.calculated_score) if result.calculated_score else None,
+            'rating': result.rating,  # was result.comment before
+            'comment': result.comment,  # free text comment if any
+            'recorded_by_uuid': str(result.recorded_by.uuid) if result.recorded_by else None,
+            'created_at': str(result.created_at),
+            'updated_at': str(result.updated_at),
+        }
 
 
 
