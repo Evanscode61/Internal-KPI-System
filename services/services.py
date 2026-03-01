@@ -31,7 +31,7 @@ class TeamService(ServiceBase):
             qs = qs.filter(department__uuid=filters['department_uuid'])
         return qs
 
-    @service_handler(require_auth=True, allowed_roles=["admin", ])
+
     def create_team(self, team_name, department_uuid, triggered_by: User, request=None):
         department = DepartmentService().get_by_uuid(department_uuid)
 
@@ -61,7 +61,6 @@ class TeamService(ServiceBase):
 
         return team
 
-    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def update_team(self, team_uuid: str, data: dict, triggered_by: User, request=None):
         team = self.get_by_uuid(team_uuid)
 
@@ -292,11 +291,46 @@ class KPIService(ServiceBase):
         for field, value in data.items():
             setattr(kpi, field, value)
         kpi.save()
+        try:
+            TransactionLogService.log(
+                event_code='kpi_updated',
+                triggered_by=triggered_by,
+                entity=kpi,
+                status_code='ACT',
+                message=f'KPI "{kpi.kpi_name}" updated',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'kpi_uuid': str(kpi.uuid),
+                    'kpi_name': kpi.kpi_name,
+                    'updated_fields': list(data.keys()),
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+        return kpi
 
 
     def delete_kpi(self, kpi_uuid: str, triggered_by: User, request=None):
         kpi = self.get_by_uuid(kpi_uuid)
+        kpi_name = kpi.kpi_name
+        kpi_uuid_str = str(kpi.uuid)
         kpi.delete()
+        try:
+            TransactionLogService.log(
+                event_code='kpi_deleted',
+                triggered_by=triggered_by,
+                entity=None,
+                status_code='ACT',
+                message=f'KPI "{kpi_name}" deleted',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'kpi_uuid': kpi_uuid_str,
+                    'kpi_name': kpi_name,
+                    'deleted_by': triggered_by.username if triggered_by else None,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
         return kpi
 
 
@@ -364,7 +398,7 @@ class KPIAssignmentService(ServiceBase):
                 entity=assignment,
                 status_code ='assigned successfully',
                 message = f'KPI "{kpi.kpi_name}" assigned',
-                ip_address = request.META.get('REMOTE_ADDR'),
+                ip_address = request.META.get('REMOTE_ADDR') if request else None,
                 metadata ={
                     'assignment_id' : str(assignment.uuid),
                     'kpi_id': str(kpi.uuid),
@@ -475,6 +509,27 @@ class TransactionLogService(ServiceBase):
     """Keeps track of transaction logs."""
 
     @staticmethod
+    def get_all_logs(**filters):
+        qs = TransactionLog.objects.select_related('event_type', 'triggered_by', 'status')
+        if 'user_uuid' in filters:
+            qs = qs.filter(triggered_by__uuid=filters['user_uuid'])
+        if 'action' in filters:
+            qs = qs.filter(event_type__code=filters['action'])
+        if 'object_type' in filters:
+            qs = qs.filter(entity_type=filters['object_type'])
+        if 'time_from' in filters:
+            qs = qs.filter(created_at__gte=filters['time_from'])
+        if 'time_to' in filters:
+            qs = qs.filter(created_at__lte=filters['time_to'])
+        return qs
+
+    @staticmethod
+    def get_by_uuid(log_uuid: str):
+        return TransactionLog.objects.select_related(
+            'event_type', 'triggered_by', 'status'
+        ).get(uuid=log_uuid)
+
+    @staticmethod
     def log(
             event_code: str,
             triggered_by: User,
@@ -484,26 +539,36 @@ class TransactionLogService(ServiceBase):
             metadata: dict = None,
             ip_address: str = None
     ) -> TransactionLog:
-        event_type = EventTypes.objects.get(code=event_code)
-        status     = Status.objects.get(code=status_code)
+        event_type,_ = EventTypes.objects.get_or_create(code=event_code, defaults = {'name': event_code.replace('_', ' ').title()})
+
+        status,_= Status.objects.get_or_create(code=status_code, defaults={'name': status_code})
+        try:
+            entity_uuid = entity.uuid
+        except AttributeError:
+            entity_uuid = None
 
         return TransactionLog.objects.create(
             event_type=event_type,
             triggered_by=triggered_by,
             status=status,
-            event_message=message,
+            message=message,
             metadata=metadata or {},
             entity_type=entity.__class__.__name__,
-            entity_id=str(entity.pk),
-            user_ip_address=ip_address
+            entity_uuid=entity_uuid,
+            ip_address=ip_address
         )
 
     @staticmethod
     def get_logs_for_entity(entity):
         """All logs for a specific entity e.g. a KPI or KPIResult."""
+        try:
+            entity_uuid = entity.uuid
+        except AttributeError:
+            return TransactionLog.objects.none()
+
         return TransactionLog.objects.filter(
             entity_type=entity.__class__.__name__,
-            entity_id=str(entity.pk)
+            entity_uuid=entity_uuid
         ).select_related('event_type', 'triggered_by', 'status')
 
     @staticmethod
@@ -518,12 +583,11 @@ class TransactionLogService(ServiceBase):
         """Everything a specific user has triggered."""
         return TransactionLog.objects.filter(
             triggered_by=user
-        ).select_related('event_type', 'status')
+        ).select_related('event_type','triggered_by','status')
 
 
 
 from simpleeval import simple_eval
-from django.contrib.auth.models import User
 
 
 class KPIResultAccountService(ServiceBase):
@@ -582,6 +646,8 @@ class KPIResultAccountService(ServiceBase):
                 max_t = target or actual or 1
                 score = (actual / max_t) * 100 * weight
 
+            # clamp score between 0 and 300 — prevents negatives on over-budget KPIs
+            score = max(0.0, min(float(score), 300.0))
             return round(float(score), 4)
 
         except Exception as e:
@@ -617,27 +683,72 @@ class KPIResultAccountService(ServiceBase):
             'kpi_name':          result.kpi_assignment.kpi.kpi_name,
             'actual_value':      str(result.actual_value),
             'calculated_score':  str(result.calculated_score),
-            'rating':            result.comment,
+            'rating':            result.rating,
             'recorded_by':       result.recorded_by.email,
         }
 
-    def create_result(self, assignment_uuid: str, actual_value, triggered_by: User, request=None):
+    def create_result(self, assignment_uuid: str, actual_value,
+                      triggered_by: User, request=None):
 
         assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
-        kpi = assignment.kpi
 
+        # ── 0. Prevent duplicate submissions on the same assignment ──────────
+        existing = self.manager.filter(
+            kpi_assignment = assignment,
+            submitted_by   = triggered_by,
+        ).first()
+        if existing:
+            raise ValueError(
+                f'You have already submitted a result for this KPI. '
+                f'Use the update endpoint to change your submission.'
+            )
+
+        # ── 1. Validate the submitter belongs to the assignment target ────────
+        if assignment.assigned_to:
+            # Individual assignment — only that specific user can submit
+            if triggered_by != assignment.assigned_to:
+                raise PermissionError('This KPI is not assigned to you')
+            submitted_by = assignment.assigned_to
+
+        elif assignment.assigned_team:
+            # Team assignment — submitter must be a member of that team
+            if triggered_by.team != assignment.assigned_team:
+                raise PermissionError('You are not a member of the assigned team')
+            submitted_by = triggered_by
+
+        elif assignment.assigned_department:
+            # Department assignment — submitter must be in that department
+            if triggered_by.department != assignment.assigned_department:
+                raise PermissionError('You are not a member of the assigned department')
+            submitted_by = triggered_by
+
+        else:
+            raise ValueError('KPI assignment has no valid target')
+        # ─────────────────────────────────────────────────────────────────────
+
+        kpi = assignment.kpi
         formula = self._get_active_formula(kpi)
         calculated_score = self._calculate_score(actual_value, kpi, formula)
-        rating = self._derive_comment(calculated_score, formula)  #  maps to rating field
+        rating = self._derive_comment(calculated_score, formula)
 
         result = self.manager.create(
             kpi_assignment=assignment,
             actual_value=actual_value,
             calculated_score=calculated_score,
-            rating=rating,  # correct field
+            rating=rating,
             recorded_by=triggered_by,
+            submitted_by=submitted_by,  # ← tracks who submitted
         )
 
+        #  Trigger alert check
+        try:
+            from performance.alert_service import AlertService
+            AlertService.check_and_create_alert(result)
+        except Exception as e:
+            print(f'[AlertService ERROR] {e}')
+        #
+
+        # ── 3. Log the transaction ────────────────────────────────────────────
         try:
             TransactionLogService.log(
                 event_code='kpi_result_submitted',
@@ -647,20 +758,23 @@ class KPIResultAccountService(ServiceBase):
                 message=f'Result submitted for KPI "{kpi.kpi_name}"',
                 ip_address=request.META.get('REMOTE_ADDR') if request else None,
                 metadata={
-                    'result_id':        str(result.uuid),
-                    'kpi_name':         kpi.kpi_name,
-                    'assignment_id':    str(assignment.uuid),
-                    'actual_value':     str(actual_value),
+                    'result_id': str(result.uuid),
+                    'kpi_name': kpi.kpi_name,
+                    'assignment_id': str(assignment.uuid),
+                    'actual_value': str(actual_value),
                     'calculated_score': str(calculated_score),
-                    'comment':          comment,
-                    'formula_used':     formula.formula_name if formula else 'default',
-                    'submitted_by':     triggered_by.email,
+                    'rating': rating,
+                    'submitted_by': submitted_by.username,
+                    'formula_used': formula.formula_name if formula else 'default',
                 }
             )
         except Exception as e:
-            print(f"[TransactionLog ERROR] {e}")
+            print(f'[TransactionLog ERROR] {e}')
+        # ─────────────────────────────────────────────────────────────────────
 
-        return self._build_result_response(result)
+        return result
+
+
 
     def update_result(self, result_uuid: str, data: dict, triggered_by: User, request=None):
         result = self.get_by_uuid(result_uuid)
@@ -715,7 +829,7 @@ class KPIResultAccountService(ServiceBase):
         writer = csv.writer(output)
         writer.writerow([
             'uuid', 'kpi_name', 'assigned_to', 'actual_value',
-            'calculated_score', 'rating', 'recorded_at', 'recorded_by',
+            'calculated_score', 'rating', 'comment', 'recorded_at', 'recorded_by',
         ])
         for r in qs:
             writer.writerow([
@@ -724,7 +838,9 @@ class KPIResultAccountService(ServiceBase):
                 r.kpi_assignment.assigned_to.email if r.kpi_assignment.assigned_to else '',
                 r.actual_value,
                 r.calculated_score,
+                r.rating,
                 r.comment,
+                r.created_at.strftime('%Y-%m-%d %H:%M:%S') if r.created_at else '',
                 r.recorded_by.email if r.recorded_by else '',
             ])
 
@@ -830,7 +946,25 @@ class KPIFormulaService(ServiceBase):
         - Deletes the formula from the database
         """
         formula = self.get_by_uuid(formula_uuid)
+        formula_uuid_str = str(formula.uuid)
+        kpi_name = formula.kpi.kpi_name
         formula.delete()
+        try:
+            TransactionLogService.log(
+                event_code='kpi_formula_deleted',
+                triggered_by=triggered_by,
+                entity=None,
+                status_code='ACT',
+                message=f'Formula for KPI "{kpi_name}" deleted',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'formula_uuid': formula_uuid_str,
+                    'kpi_name': kpi_name,
+                    'deleted_by': triggered_by.username if triggered_by else None,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
         return formula
 
 
@@ -844,33 +978,60 @@ class UserService(ServiceBase):
     def register_user(self, username, email, password, role_name=None):
         if self.filter(email=email).exists():
             raise ValueError("Email already exists")
-        role = Role.objects.filter(name=role_name or "Staff").first()
+        role = Role.objects.filter(name=role_name or "Employee").first()
         if not role:
             raise ValueError("Role not found")
-        return self.create(
+        user = self.create(
             username=username,
             email=email,
             password=make_password(password),
             role=role,
             is_active=True
         )
+        try:
+            TransactionLogService.log(
+                event_code='user_registered',
+                triggered_by=user,
+                entity=user,
+                status_code='ACT',
+                message=f'User "{user.username}" registered',
+                ip_address=None,
+                metadata={'user_uuid': str(user.uuid), 'username': user.username, 'email': user.email}
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+        return user
 
 
 
 
     @staticmethod
-    def delete_user(username: str):
+    def delete_user(uuid):
         """
         Delete a user  by username and returns response provider if
         user doesn't exist, returns success if user is deleted successfully.
         """
         try:
-            user = User.objects.get(username=username)
+            user = User.objects.get(username=uuid)
         except User.DoesNotExist:
-            return ResponseProvider.not_found(error=f"User '{username}' not found")
+            return ResponseProvider.not_found(error=f"User '{uuid}' not found")
 
+        username = user.username
+        user_uuid = str(user.uuid)
         user.delete()
-        return ResponseProvider.success(message=f"User '{username}' deleted successfully")
+        try:
+            TransactionLogService.log(
+                event_code='user_deleted',
+                triggered_by=None,
+                entity=None,
+                status_code='ACT',
+                message=f'User "{username}" deleted',
+                ip_address=None,
+                metadata={'user_uuid': user_uuid, 'username': username}
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+        return ResponseProvider.success(message=f"User '{uuid}' deleted successfully")
 
     def authenticate_user(self, email, password):
         user = self.filter(email=email).first()
@@ -881,7 +1042,7 @@ class UserService(ServiceBase):
         return user
 
     @staticmethod
-    def change_password(self, user, old_password, new_password):
+    def change_password( user, old_password, new_password):
         if not check_password(old_password, user.password):
             raise ValueError("Old password incorrect")
         user.password = make_password(new_password)
@@ -889,8 +1050,8 @@ class UserService(ServiceBase):
         return True
 
     @staticmethod
-    @service_handler(require_auth=True, allowed_roles=["admin"])
-    def assign_role(self, user, role_name):
+
+    def assign_role( user, role_name):
         role = Role.objects.filter(name=role_name).first()
         if not role:
             raise ValueError("Role not found")
@@ -902,7 +1063,7 @@ class UserService(ServiceBase):
     @service_handler(require_auth=True, allowed_roles=["admin"])
     def list_users(request):
         users = list(User.objects.select_related("role")
-                     .values("id", "username", "email", "role__name"))
+                     .values("uuid", "username", "email", "role__name"))
         return ResponseProvider.success("Users retrieved successfully", users)
 
     @staticmethod
@@ -952,33 +1113,181 @@ class UserService(ServiceBase):
 
         user.set_password(new_password)
         user.save()
-
+        try:
+            TransactionLogService.log(
+                event_code='password_reset',
+                triggered_by=user,
+                entity=user,
+                status_code='ACT',
+                message=f'Password reset for user "{user.username}"',
+                ip_address=None,
+                metadata={'user_uuid': str(user.uuid), 'username': user.username}
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
         return user
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # services/services.py  — paste this class just before class RoleService
+    # ─────────────────────────────────────────────────────────────────────────────
+
+class OTPService:
+    """
+    Handles OTP generation, email sending, and verification.
+    Used for password reset and first-login flows.
+    Flow:
+        1. create_otp(username, purpose)
+               → invalidates old OTPs, generates 6-digit code,
+                 saves to DB with 10-min expiry, emails the code.
+        2. verify_otp(username, code, purpose)
+               → validates the code, marks it used, returns the user.
+    """
+
+    OTP_EXPIRY_MINUTES = 10
+
+    @staticmethod
+    def generate_otp():
+        """Generate a cryptographically secure 6-digit OTP."""
+        import random
+        return str(random.SystemRandom().randint(100000, 999999))
+
+    @classmethod
+    def create_otp(cls, username: str, purpose: str):
+        """
+        Invalidate any existing unused OTPs for this user + purpose,
+        then create a fresh one and send it via email.
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+        from accounts.models import OTP
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            raise LookupError(f"User '{username}' not found")
+
+        # Invalidate all previous unused OTPs for the same purpose
+        OTP.objects.filter(
+            user=user,
+            purpose=purpose,
+            is_used=False,
+        ).update(is_used=True)
+
+        code = cls.generate_otp()
+        otp = OTP.objects.create(
+            user=user,
+            code=code,
+            purpose=purpose,
+            expires_at=timezone.now() + timedelta(minutes=cls.OTP_EXPIRY_MINUTES),
+        )
+
+        cls._send_otp_email(user, code, purpose)
+        return otp
+
+    @classmethod
+    def verify_otp(cls, username: str, code: str, purpose: str):
+        """
+        Verify the OTP code for a given user and purpose.
+        Marks it as used on success.
+        Raises ValueError  → wrong code or already used.
+        Raises ValueError  → code has expired.
+        Raises LookupError → user not found.
+        """
+        from accounts.models import OTP
+
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            raise LookupError(f"User '{username}' not found")
+
+        otp = OTP.objects.filter(
+            user=user,
+            code=code,
+            purpose=purpose,
+            is_used=False,
+        ).order_by('-created_at').first()
+
+        if not otp:
+            raise ValueError("Invalid OTP code")
+
+        if not otp.is_valid():
+            raise ValueError("OTP has expired. Please request a new one")
+
+        otp.is_used = True
+        otp.save(update_fields=['is_used'])
+        return user
+
+    @staticmethod
+    def _send_otp_email(user, code, purpose):
+        """Send OTP code to the user's registered email address."""
+        from django.core.mail import send_mail
+        from django.conf import settings
+
+        labels = {
+            'password_reset': 'Password Reset',
+            'first_login': 'Account Activation',
+        }
+        label = labels.get(purpose, 'Verification')
+
+        subject = f'Your {label} OTP — Internal KPI System'
+        message = (
+            f'Dear {user.username},\n\n'
+            f'Your one-time password (OTP) for {label} is:\n\n'
+            f'        {code}\n\n'
+            f'This code is valid for 10 minutes.\n'
+            f'Do not share this code with anyone.\n\n'
+            f'If you did not request this, please contact your administrator immediately.\n\n'
+            f'Internal KPI System'
+        )
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f'[OTP Email ERROR] Could not send OTP to {user.email}: {e}')
 
 class RoleService(ServiceBase):
     manager = Role.objects
 
     @staticmethod
-    @service_handler(require_auth=True, allowed_roles=["admin"])
     def update_user_role(request, username, new_role):
         try:
             user = User.objects.get(username=username)
         except User.DoesNotExist:
             return ResponseProvider.not_found(error="User not found")
 
-        user.role = new_role
+        try:
+            role_obj = Role.objects.get(name=new_role)
+        except Role.DoesNotExist:
+            return ResponseProvider.not_found(error=f"Role '{new_role}' not found")
+
+        old_role = user.role.name if user.role else None
+        user.role = role_obj
         user.save(update_fields=["role"])
-
-        data = {
-            "username": user.username,
-            "email": user.email,
-            "role": user.role
-        }
-
-        return ResponseProvider.success(
-                message="User role updated successfully",
-                data=data
+        try:
+            TransactionLogService.log(
+                event_code='user_role_updated',
+                triggered_by=None,
+                entity=user,
+                status_code='ACT',
+                message=f'Role updated for "{user.username}": {old_role} -> {new_role}',
+                ip_address=None,
+                metadata={'user_uuid': str(user.uuid), 'username': user.username, 'old_role': old_role, 'new_role': new_role}
             )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+        return ResponseProvider.success(
+            message="User role updated successfully",
+            data={
+                "username": user.username,
+                "email": user.email,
+                "role": user.role.name,
+            }
+        )
 
     def delete_role_by_name(self, name: str) -> None:
         """
@@ -994,7 +1303,6 @@ class RoleService(ServiceBase):
             raise LookupError(f"Role '{name}' not found")
         role.delete()
 
-    @staticmethod
     def get_all_roles(self):
         """
         Retrieve all roles.
@@ -1028,9 +1336,425 @@ class AuthService:
         token.delete()
 
 
+#--------------------------------------------------------------------------
+#  PERFORMANCE SUMMARY
+#--------------------------------------------------------------------------
+import csv
+import io
+
+from django.db.models import Sum, QuerySet
+from django.http import HttpResponse
+from django.contrib.auth import get_user_model
 
 
 
+from performance.models import PerformanceSummary
+
+class PerformanceSummaryAccountService(ServiceBase):
+    """
+    Data access layer for PerformanceSummary.
+    Handles all DB queries, summary generation, and exports.
+    Sends email notifications after every summary is generated.
+    """
+
+    manager = PerformanceSummary.objects
+
+    def get_by_uuid(self, summary_uuid: str) -> PerformanceSummary:
+        """Fetch a single PerformanceSummary by its UUID."""
+        return self.manager.select_related(
+            'user', 'department', 'team'
+        ).get(uuid=summary_uuid)
+
+    def get_all_summaries(self, **filters) -> QuerySet:
+        """
+        Return a filtered queryset of summaries.
+        Supported filters: user_uuid, team_uuid, department_uuid,
+        department_name, period_start, period_end, summary_type.
+        """
+        qs = self.manager.select_related('user', 'department', 'team').all()
+
+        if 'user_uuid'       in filters:
+            qs = qs.filter(user__uuid=filters['user_uuid'])
+        if 'team_uuid'       in filters:
+            qs = qs.filter(team__uuid=filters['team_uuid'])
+        if 'department_uuid' in filters:
+            qs = qs.filter(department__uuid=filters['department_uuid'])
+        if 'department_name' in filters:
+            qs = qs.filter(department__name__iexact=filters['department_name'])
+        if 'period_start'    in filters:
+            qs = qs.filter(period_start__gte=filters['period_start'])
+        if 'period_end'      in filters:
+            qs = qs.filter(period_end__lte=filters['period_end'])
+        if 'summary_type'    in filters:
+            qs = qs.filter(summary_type=filters['summary_type'])
+
+        return qs
+
+    # ── INDIVIDUAL ────────────────────────────────────────────────────────────
+
+    def generate_individual_summary(self, user_uuid, period_start, period_end,
+                                    triggered_by=None, request=None):
+        """
+        Aggregate KPI scores from results where the KPI was
+        assigned directly to this individual user.
+        Notifies the employee and HR after generation.
+        """
+        user = User.objects.select_related(
+            'department', 'team'
+        ).get(uuid=user_uuid)
+
+        results = KPIResults.objects.filter(
+            submitted_by                = user,
+            kpi_assignment__assigned_to = user,
+            created_at__gte             = period_start,
+            created_at__lte             = period_end,
+            calculated_score__isnull    = False,
+        ).select_related('kpi_assignment__kpi')
+
+        total_weighted = sum(
+            float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        total_weights = sum(
+            float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+
+        summary, _ = self.manager.update_or_create(
+            user         = user,
+            period_start = period_start,
+            period_end   = period_end,
+            defaults     = {
+                'summary_type':   PerformanceSummary.SummaryType.INDIVIDUAL,
+                'department':     user.department,
+                'team':           user.team,
+                'weighted_score': weighted_score,
+            }
+        )
+
+        self._log(summary, triggered_by, request)
+        self._notify_individual(summary, user)
+        return summary
+
+    # ── TEAM ──────────────────────────────────────────────────────────────────
+
+    def generate_team_summary(self, team_uuid, period_start, period_end,
+                              triggered_by=None, request=None):
+        """
+        Aggregate KPI scores from results where the KPI was
+        assigned to this team.
+        Notifies all team members, the line manager, and HR.
+        """
+        from organization.models import Team
+        team = Team.objects.select_related('department').get(uuid=team_uuid)
+
+        results = KPIResults.objects.filter(
+            kpi_assignment__assigned_team = team,
+            created_at__gte               = period_start,
+            created_at__lte               = period_end,
+            calculated_score__isnull      = False,
+        ).select_related('kpi_assignment__kpi')
+
+        total_weighted = sum(
+            float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        total_weights = sum(
+            float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+
+        summary, _ = self.manager.update_or_create(
+            team         = team,
+            period_start = period_start,
+            period_end   = period_end,
+            defaults     = {
+                'summary_type':   PerformanceSummary.SummaryType.TEAM,
+                'department':     team.department,
+                'weighted_score': weighted_score,
+            }
+        )
+
+        self._log(summary, triggered_by, request)
+        self._notify_team(summary, team)
+        return summary
+
+    # ── DEPARTMENT ────────────────────────────────────────────────────────────
+
+    def generate_department_summary(self, department_uuid, period_start, period_end,
+                                    triggered_by=None, request=None):
+        """
+        Aggregate KPI scores from results where the KPI was
+        assigned to this department.
+        Notifies the department line manager and HR.
+        """
+        from organization.models import Department
+        department = Department.objects.get(uuid=department_uuid)
+
+        results = KPIResults.objects.filter(
+            kpi_assignment__assigned_department = department,
+            created_at__gte                     = period_start,
+            created_at__lte                     = period_end,
+            calculated_score__isnull            = False,
+        ).select_related('kpi_assignment__kpi')
+
+        total_weighted = sum(
+            float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        total_weights = sum(
+            float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in results
+        )
+        weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+
+        summary, _ = self.manager.update_or_create(
+            department   = department,
+            period_start = period_start,
+            period_end   = period_end,
+            defaults     = {
+                'summary_type':   PerformanceSummary.SummaryType.DEPARTMENT,
+                'weighted_score': weighted_score,
+            }
+        )
+
+        self._log(summary, triggered_by, request)
+        self._notify_department(summary, department)
+        return summary
+
+    # ── NOTIFICATION HELPERS ──────────────────────────────────────────────────
+
+    def _notify_individual(self, summary, user):
+        """
+        After individual summary is generated:
+        notify the employee and HR.
+        """
+        from performance.email_service import EmailNotificationService
+        from performance.models import Notification
+
+        # ── always save notification first ────────────────────────────────
+        try:
+            Notification.objects.create(
+                recipient         = user,
+                summary           = summary,
+                notification_type = Notification.NotificationType.SUMMARY,
+                message           = (
+                    f'Your performance summary for '
+                    f'{summary.period_start} to {summary.period_end} '
+                    f'is ready. Score: {summary.weighted_score}'
+                ),
+                is_read = False,
+            )
+        except Exception as e:
+            print(f'[Notification ERROR] could not save notification for {user.username}: {e}')
+
+        # ── email separately so a failure does not block the notification ──
+        try:
+            EmailNotificationService.send_individual_summary_email(user, summary)
+        except Exception as e:
+            print(f'[Email ERROR] summary email to {user.email}: {e}')
+
+        # ── HR notification ────────────────────────────────────────────────
+        try:
+            self._create_hr_notifications(summary)
+        except Exception as e:
+            print(f'[HR Notification ERROR] {e}')
+        try:
+            EmailNotificationService.send_summary_to_hr(summary)
+        except Exception as e:
+            print(f'[Email ERROR] HR summary email: {e}')
+
+    def _notify_team(self, summary, team):
+        """
+        After team summary is generated:
+        notify all team members, the line manager, and HR.
+        """
+        from performance.email_service import EmailNotificationService
+        from performance.models import Notification
+
+        team_members = User.objects.filter(team=team).select_related('role')
+
+        # ── notify each team member ────────────────────────────────────────
+        for member in team_members:
+            try:
+                Notification.objects.create(
+                    recipient         = member,
+                    summary           = summary,
+                    notification_type = Notification.NotificationType.SUMMARY,
+                    message           = (
+                        f'Your team {team.team_name} performance summary for '
+                        f'{summary.period_start} to {summary.period_end} '
+                        f'is ready. Score: {summary.weighted_score}'
+                    ),
+                    is_read = False,
+                )
+            except Exception as e:
+                print(f'[Notification ERROR] team member {member.username}: {e}')
+            try:
+                EmailNotificationService.send_team_summary_email([member], summary)
+            except Exception as e:
+                print(f'[Email ERROR] team summary to {member.email}: {e}')
+
+        # ── notify line managers ───────────────────────────────────────────
+        managers = User.objects.filter(
+            department     = team.department,
+            role__name__in = ['Business_Line_Manager', 'Tech_Line_Manager']
+        )
+        for manager in managers:
+            try:
+                Notification.objects.create(
+                    recipient         = manager,
+                    summary           = summary,
+                    notification_type = Notification.NotificationType.SUMMARY,
+                    message           = (
+                        f'Team {team.team_name} performance summary for '
+                        f'{summary.period_start} to {summary.period_end} '
+                        f'is ready. Score: {summary.weighted_score}'
+                    ),
+                    is_read = False,
+                )
+            except Exception as e:
+                print(f'[Notification ERROR] manager {manager.username}: {e}')
+            try:
+                EmailNotificationService.send_manager_summary_email(manager, summary)
+            except Exception as e:
+                print(f'[Email ERROR] manager summary to {manager.email}: {e}')
+
+        # ── HR ─────────────────────────────────────────────────────────────
+        try:
+            self._create_hr_notifications(summary)
+        except Exception as e:
+            print(f'[HR Notification ERROR] {e}')
+        try:
+            EmailNotificationService.send_summary_to_hr(summary)
+        except Exception as e:
+            print(f'[Email ERROR] HR team summary: {e}')
+
+    def _notify_department(self, summary, department):
+        """
+        After department summary is generated:
+        notify the department line manager and HR.
+        """
+        from performance.email_service import EmailNotificationService
+        from performance.models import Notification
+
+        managers = User.objects.filter(
+            department     = department,
+            role__name__in = ['Business_Line_Manager', 'Tech_Line_Manager']
+        )
+
+        # ── notify line managers ───────────────────────────────────────────
+        for manager in managers:
+            try:
+                Notification.objects.create(
+                    recipient         = manager,
+                    summary           = summary,
+                    notification_type = Notification.NotificationType.SUMMARY,
+                    message           = (
+                        f'{department.name} department performance summary for '
+                        f'{summary.period_start} to {summary.period_end} '
+                        f'is ready. Score: {summary.weighted_score}'
+                    ),
+                    is_read = False,
+                )
+            except Exception as e:
+                print(f'[Notification ERROR] dept manager {manager.username}: {e}')
+            try:
+                EmailNotificationService.send_manager_summary_email(manager, summary)
+            except Exception as e:
+                print(f'[Email ERROR] dept manager summary to {manager.email}: {e}')
+
+        # ── HR ─────────────────────────────────────────────────────────────
+        try:
+            self._create_hr_notifications(summary)
+        except Exception as e:
+            print(f'[HR Notification ERROR] {e}')
+        try:
+            EmailNotificationService.send_summary_to_hr(summary)
+        except Exception as e:
+            print(f'[Email ERROR] HR dept summary: {e}')
+
+    def _create_hr_notifications(self, summary):
+        """
+        Create in-app notifications for all HR users
+        whenever any type of summary is generated.
+        """
+        from performance.models import Notification
+
+        hr_users = User.objects.filter(role__name__iexact='hr')
+        for hr_user in hr_users:
+            Notification.objects.create(
+                recipient         = hr_user,
+                summary           = summary,
+                notification_type = Notification.NotificationType.SUMMARY,
+                message           = (
+                    f'New {summary.summary_type} performance summary generated. '
+                    f'Score: {summary.weighted_score}'
+                ),
+                is_read = False,
+            )
+
+    # ── LOGGING ───────────────────────────────────────────────────────────────
+
+    def _log(self, summary, triggered_by, request):
+        """Log every summary generation to the transaction log."""
+        try:
+            TransactionLogService.log(
+                event_code   = 'performance_summary_generated',
+                triggered_by = triggered_by,
+                entity       = summary,
+                status_code  = 'ACT',
+                message      = f'{summary.summary_type.title()} summary generated',
+                ip_address   = request.META.get('REMOTE_ADDR') if request else None,
+                metadata     = {
+                    'summary_uuid':   str(summary.uuid),
+                    'summary_type':   summary.summary_type,
+                    'weighted_score': str(summary.weighted_score),
+                    'generated_by':   triggered_by.email if triggered_by else None,
+                }
+            )
+        except Exception as e:
+            print(f'[TransactionLog ERROR] {e}')
+
+    # ── CSV EXPORT ────────────────────────────────────────────────────────────
+
+    def export_csv(self, **filters) -> HttpResponse:
+        """Export filtered summaries as a downloadable CSV file."""
+        qs = self.get_all_summaries(**filters)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'uuid', 'summary_type', 'subject', 'department',
+            'team', 'period_start', 'period_end',
+            'weighted_score', 'generated_at',
+        ])
+
+        for s in qs:
+            if s.summary_type == 'individual':
+                subject = s.user.username if s.user else ''
+            elif s.summary_type == 'team':
+                subject = s.team.team_name if s.team else ''
+            else:
+                subject = s.department.name if s.department else ''
+
+            writer.writerow([
+                str(s.uuid),
+                s.summary_type,
+                subject,
+                s.department.name if s.department else '',
+                s.team.team_name if s.team else '',
+                s.period_start,
+                s.period_end,
+                s.weighted_score,
+                s.created_at,
+            ])
+
+        response = HttpResponse(output.getvalue(), content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename=performance_summaries.csv'
+        return response
 
 
 
