@@ -18,7 +18,6 @@ class KpiDefinition(BaseModel):
     kpi_description = models.TextField(blank=True)
     calculation_type = models.CharField(max_length=50,null=True ,blank=True)
     weight_value = models.DecimalField(max_digits=5, decimal_places=2,default=0)
-    formula = models.ForeignKey('KPIFormula', on_delete=models.PROTECT,null=True)
     measurement_type = models.CharField(max_length=50,help_text='% ,hours, number')
     min_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     max_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -28,60 +27,77 @@ class KpiDefinition(BaseModel):
         db_table = 'kpis'
         ordering = ['-created_at']
     def __str__(self):
-        return f"{self.kpi_name} ({self.department.name})"
+        return f"{self.kpi_name} ({self.department.name if self.department else 'No Department'})"
 
 class KpiAssignment(BaseModel):
-    kpi = models.ForeignKey(KpiDefinition, on_delete=models.CASCADE)
-    assigned_to = models.ForeignKey(Department,null= True, blank = True, on_delete=models.CASCADE)
-    assigned_team = models.ForeignKey(Team,null= True, blank = True, on_delete=models.CASCADE)
-    assigned_user = models.ForeignKey(User,null = True, blank =True, on_delete=models.CASCADE)
-    period_start = models.DateField(help_text='Start date')
-    period_end = models.DateField(help_text='End date')
-    target_value = models.DecimalField(max_digits=5, decimal_places=2,default=0)
-    weight = models.DecimalField(max_digits=5, decimal_places=2,help_text='Weight of the assignment')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    status = models.ForeignKey(Status, on_delete=models.CASCADE,null = True)
+    kpi                 = models.ForeignKey(KpiDefinition, on_delete=models.CASCADE, related_name='assignments')
+    assigned_department = models.ForeignKey(Department, null=True, blank=True, on_delete=models.SET_NULL, related_name='kpi_assignments')
+    assigned_team       = models.ForeignKey(Team, null=True, blank=True, on_delete=models.SET_NULL, related_name='kpi_assignments')
+    assigned_to         = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='kpi_assignments')
+    period_start        = models.DateField(help_text='Start date', null=True, blank=True)
+    period_end          = models.DateField(help_text='End date', null=True, blank=True)
+    target_value        = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    weight              = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    status              = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True, related_name='kpi_assignments')
 
     class Meta:
-        db_table = 'kpiAssignment'
-        ordering = ['-period_start','-period_end']
+        db_table = 'kpisAssignments'
 
     def __str__(self):
-        return f"{self.kpi.name}|{self.period_start} ({self.period_end})"
+        return f"{self.kpi.kpi_name} → {self.assigned_to.username if self.assigned_to else 'No User'}"
 
 class KPIFormula(BaseModel):
     formula_name = models.CharField(max_length=30,null=True,blank=True)
-    kpi = models.OneToOneField(KpiDefinition,null =True ,blank = True, on_delete=models.CASCADE)
-    period_start = models.DateField(help_text='Start date')
+    kpi = models.ForeignKey(KpiDefinition, on_delete=models.CASCADE,related_name= "formula" )
+    period_start = models.DateField(help_text='Start date',null=True,blank = True)
     formula_expression = models.TextField( help_text="Example: (actual / target) * 100")
     data_source = models.CharField(
-        max_length=100,
+        max_length=100,blank =True,
         help_text="Example: manual_entry, jira_api,")
+    status = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True)
+    outstanding_threshold = models.DecimalField(max_digits=5, decimal_places=2,
+                                                null=True, blank=True,
+                                                help_text='Score >= this = Outstanding. Default 90')
+    good_threshold = models.DecimalField(max_digits=5, decimal_places=2,
+                                         null=True, blank=True,
+                                         help_text='Score >= this = Good. Default 75')
+    satisfactory_threshold = models.DecimalField(max_digits=5, decimal_places=2,
+                                                 null=True, blank=True,
+                                                 help_text='Score >= this = Satisfactory. Default 60')
+    needs_improvement_threshold = models.DecimalField(max_digits=5, decimal_places=2,
+                                                      null=True, blank=True,
+                                                      help_text='Score >= this = Needs Improvement. Default 40')
+    class Meta:
+        db_table = 'kpisFormula'
 
     def __str__(self):
-        return f"Formula for {self.kpi.name if self.kpi else 'No KPI assigned'}"
-
+        return f"Formula for {self.kpi.kpi_name if self.kpi else 'No KPI assigned'}"
 
 class KPIResults(BaseModel):
-    # result entered by assigned individual and calculations done by the calculation engine
     class Rating(models.TextChoices):
-        OUTSTANDING = 'outstanding', 'OUTSTANDING'
-        GOOD = 'good', 'GOOD'
-        LOW = 'low', 'LOW'
+        OUTSTANDING       = 'outstanding',       'Outstanding'
+        GOOD              = 'good',              'Good'
+        SATISFACTORY      = 'satisfactory',      'Satisfactory'
+        NEEDS_IMPROVEMENT = 'needs_improvement', 'Needs Improvement'
+        POOR              = 'poor',              'Poor'
 
-    KpiAssignment = models.ForeignKey(KpiAssignment, on_delete=models.CASCADE)
-    calculated_score = models.DecimalField(max_digits=5, decimal_places=2,blank=True)
-    actual_value = models.DecimalField(max_digits=5, decimal_places=2,blank=True)
-    rating =models.CharField(choices=Rating.choices, max_length=20)
-    comment = models.TextField(blank=True)
-    recorded_by = models.ForeignKey(User,null= True, on_delete=models.SET_NULL,related_name='recorded_kpiResults')
-    status = models.ForeignKey(Status, on_delete=models.CASCADE,null=True)
+    kpi_assignment   = models.ForeignKey(KpiAssignment, on_delete=models.CASCADE,
+                           related_name='results', null=True, blank=True)
+    actual_value     = models.DecimalField(max_digits=10, decimal_places=4, blank=True)
+    calculated_score = models.DecimalField(max_digits=10, decimal_places=4, blank=True, null=True)
+    rating           = models.CharField(choices=Rating.choices, max_length=20, blank=True)
+    comment          = models.TextField(blank=True)
+    recorded_by      = models.ForeignKey(User, null=True, on_delete=models.SET_NULL,
+                           related_name='recorded_kpi_results')
+    status           = models.ForeignKey(Status, on_delete=models.CASCADE, null=True)
+    submitted_by     = models.ForeignKey(User, null=True, blank=True,
+                           on_delete=models.SET_NULL,
+                           related_name='submitted_kpi_results',
+                           help_text='The individual member submitting under a team/dept assignment')
+    # ───────────────────────────────────────────────────────────────────
+
     class Meta:
         db_table = 'kpisResults'
-
-    def __str__(self):
-        return f"Result for {self.KpiAssignment}"
 
 
 

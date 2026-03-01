@@ -85,6 +85,7 @@ def get_kpi_assignments_view(request) -> ResponseProvider:
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
 
+
 @csrf_exempt
 @allowed_http_methods(['POST'])
 def create_kpi_formula_view(request) -> ResponseProvider :
@@ -95,17 +96,17 @@ def create_kpi_formula_view(request) -> ResponseProvider :
 
 @csrf_exempt
 @allowed_http_methods(['PUT', 'PATCH'])
-def update_kpi_formula_view(request) -> ResponseProvider :
+def update_kpi_formula_view(request, formula_uuid:str) -> ResponseProvider :
     try:
-        return KPIFormulaServiceHandler.update_formula(request)
+        return KPIFormulaServiceHandler.update_formula(request, formula_uuid)
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
 
 @csrf_exempt
 @allowed_http_methods(['DELETE'])
-def delete_kpi_formula_view(request) -> ResponseProvider :
+def delete_kpi_formula_view(request,formula_uuid:str) -> ResponseProvider :
     try:
-        return KPIFormulaServiceHandler.delete_formula(request)
+        return KPIFormulaServiceHandler.delete_formula(request,formula_uuid)
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
 
@@ -122,7 +123,7 @@ def get_kpi_formula_view(request, kpi_uuid: str) -> ResponseProvider :
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
-@require_roles('employee', 'Business_Line_Manager', 'Tech_Line_Manager')
+@require_roles('employee', 'Business_Line_Manager', 'Tech_Line_Manager','admin')
 def submit_kpi_result_view(request) -> ResponseProvider:
     try:
         return KPIResultService.submit_result(request)
