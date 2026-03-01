@@ -10,7 +10,7 @@ class JWTAuthenticationMiddleware:
         self.get_response = get_response  # only assignment
           #
     def __call__(self, request):
-        if request.path in ["/api/auth/login/", "/api/auth/register/"]:
+        if request.path in ["/api/auth/login/", "/api/auth/register_user/","/api/auth/refresh/"]:
             return self.get_response(request)
         # Only check protected paths
         if request.path.startswith("/api/"):
@@ -31,7 +31,7 @@ class JWTAuthenticationMiddleware:
                 return JsonResponse({"error": "Access token required"}, status=401)
 
             try:
-                request.user = User.objects.get(id=payload["user_id"])
+                request.user = User.objects.get(pk=payload["user_id"])
             except User.DoesNotExist:
                 return JsonResponse({"error": "User not found"}, status=401)
 

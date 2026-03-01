@@ -9,7 +9,7 @@ ALGORITHM = "HS256"
 def generate_access_token(user):
     payload = {
         "type": "access",
-        "user_id": user.id,
+        "user_id": str(user.pk),
         "username": user.username,
         "role": user.role.name if user.role else None,
         "exp": datetime.utcnow() + timedelta(minutes=15),
@@ -22,8 +22,8 @@ def generate_access_token(user):
 def generate_refresh_token(user):
     payload = {
         "type": "refresh",
-        "user_id": user.id,
-        "exp": datetime.utcnow() + timedelta(minutes=15),
+        "user_id": str(user.pk),
+        "exp": datetime.utcnow() + timedelta(days=7),
         "iat": datetime.utcnow(),
     }
 
