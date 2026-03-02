@@ -11,7 +11,7 @@ urlpatterns = [
   #-----------------------------------------------------------------------------------------
   path('kpi_definition/create/',create_kpi_definition_view, name='create_kpi_definition'),
   path('kpi_definition/list_all/', get_all_kpis_definition_view, name='get_all_kpis_definition'),
-  path('kpi_definition/delete/<uuid:kpi_uuid>', delete_kpi_definition_view, name='delete_kpi_definition'),
+  path('kpi_definition/delete/<uuid:kpi_uuid>/', delete_kpi_definition_view, name='delete_kpi_definition'),
   path('kpi_definition/update/<uuid:kpi_uuid>/', update_kpi_definition_view, name='update_kpi_definition'),
   path('kpi_definition/get_kpi/<uuid:kpi_uuid>/', get_kpi_definition_view, name='get_kpi_definition' ),
   path('kpi_assignment/create/', create_kpi_assignment_view , name='create_kpi_assignment'),
@@ -21,9 +21,9 @@ urlpatterns = [
   #             KPI FORMULA URLS
   #--------------------------------------------------------------------------------------------------
   path('kpi_formula/create/', create_kpi_formula_view, name='create_kpi_formula'),
-  path('kpi_formula/update/<uuid:formula_uuid>', update_kpi_formula_view, name='update_kpi_formula'),
-  path('kpi_formula/delete/<uuid:formula_uuid>',delete_kpi_formula_view ,name = 'delete_kpi_formula'),
-  path('kpi_formula/get_formula/<uuid:kpi_uuid>', get_kpi_formula_view, name='get_kpi_formula'),
+  path('kpi_formula/update/<uuid:formula_uuid>/', update_kpi_formula_view, name='update_kpi_formula'),
+  path('kpi_formula/delete/<uuid:formula_uuid>/',delete_kpi_formula_view ,name = 'delete_kpi_formula'),
+  path('kpi_formula/get_formula/<uuid:kpi_uuid>/', get_kpi_formula_view, name='get_kpi_formula'),
 
 #-------------------------------------------------------------------------------------------------
 #       KPI RESULTS URL

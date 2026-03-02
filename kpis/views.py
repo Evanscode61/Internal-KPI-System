@@ -49,7 +49,7 @@ def delete_kpi_definition_view(request, kpi_uuid: str) -> ResponseProvider:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
-@require_roles('admin','Business_Line_Manager','Tech_Line_Manager')
+@require_roles( 'hr','admin','Business_Line_Manager','Tech_Line_Manager')
 def get_all_kpis_definition_view(request) -> ResponseProvider:
     try:
         return KPIDefinitionHandler.get_all_kpis(request)
@@ -70,6 +70,7 @@ def create_kpi_assignment_view(request) -> ResponseProvider:
 
 @csrf_exempt
 @allowed_http_methods(['PUT', 'PATCH'])
+@require_roles('admin','Business_Line_Manager','Tech_Line_Manager')
 def update_kpi_assignment_view(request, assignment_uuid:str) -> ResponseProvider:
     try:
         return KPIAssignmentHandler.update_kpi_assignment(request ,assignment_uuid)
@@ -88,6 +89,7 @@ def get_kpi_assignments_view(request) -> ResponseProvider:
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
+@require_roles( 'Business_Line_Manager', 'Tech_Line_Manager')
 def create_kpi_formula_view(request) -> ResponseProvider :
     try:
         return KPIFormulaServiceHandler.create_formula(request)
@@ -96,6 +98,7 @@ def create_kpi_formula_view(request) -> ResponseProvider :
 
 @csrf_exempt
 @allowed_http_methods(['PUT', 'PATCH'])
+@require_roles( 'Business_Line_Manager', 'Tech_Line_Manager')
 def update_kpi_formula_view(request, formula_uuid:str) -> ResponseProvider :
     try:
         return KPIFormulaServiceHandler.update_formula(request, formula_uuid)
@@ -104,6 +107,7 @@ def update_kpi_formula_view(request, formula_uuid:str) -> ResponseProvider :
 
 @csrf_exempt
 @allowed_http_methods(['DELETE'])
+@require_roles( 'Business_Line_Manager', 'Tech_Line_Manager')
 def delete_kpi_formula_view(request,formula_uuid:str) -> ResponseProvider :
     try:
         return KPIFormulaServiceHandler.delete_formula(request,formula_uuid)
@@ -112,6 +116,7 @@ def delete_kpi_formula_view(request,formula_uuid:str) -> ResponseProvider :
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
+@require_roles( 'Business_Line_Manager', 'Tech_Line_Manager')
 def get_kpi_formula_view(request, kpi_uuid: str) -> ResponseProvider :
     try:
         return KPIFormulaServiceHandler.get_formula_by_kpi(kpi_uuid)

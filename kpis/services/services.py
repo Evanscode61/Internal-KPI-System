@@ -104,15 +104,20 @@ class KPIDefinitionHandler:
 
     @classmethod
     def get_all_kpis(cls, request) -> ResponseProvider:
-        """List KPIs with optional filters."""
+        """List KPIs with optional filters.
+        Line managers are automatically scoped to their own department.
+        """
         filters = {
             'department_uuid': request.GET.get('department_uuid'),
             'measurement_type': request.GET.get('measurement_type'),
             'calculation_type': request.GET.get('calculation_type'),
             'kpi_name': request.GET.get('kpi_name'),
         }
-        # Drop None values so the service can apply only what's provided
         filters = {k: v for k, v in filters.items() if v is not None}
+
+        # Line managers can only see KPIs belonging to their own department
+        if getattr(request, 'is_line_manager', False) and request.department_scope:
+            filters['department_uuid'] = str(request.department_scope.uuid)
 
         kpis = KPIService().get_all_kpis(**filters)
         data = [cls._serialize(kpi) for kpi in kpis]
@@ -155,7 +160,7 @@ class KPIAssignmentHandler:
         """update a KPI assignment by UUID."""
         data = get_clean_request_data(
             request,
-            allowed_fields={'period_start', 'status'}
+            allowed_fields={'period_start', 'status',}
         )
 
         assignment = KPIAssignmentService().update_assignment(
@@ -170,7 +175,9 @@ class KPIAssignmentHandler:
         )
     @classmethod
     def get_all_kpi_assignments(cls ,request):
-
+        """returns a list of all KPI assignments.
+        Line managers are automatically scoped to their own department.
+        """
         filters = {
             'user_uuid': request.GET.get('user_uuid'),
             'team_uuid': request.GET.get('team_uuid'),
@@ -178,6 +185,11 @@ class KPIAssignmentHandler:
             'status': request.GET.get('status'),
         }
         filters ={k:v for k,v in filters.items() if v is not None}
+
+        # Line managers can only see assignments within their own department
+        if getattr(request, 'is_line_manager', False) and request.department_scope:
+            filters['department_uuid'] = str(request.department_scope.uuid)
+
         assignments = KPIAssignmentService().get_all_assignments(**filters)
         data = [cls._serialize(a) for a in assignments]
         return ResponseProvider.success(data=data)
@@ -204,7 +216,9 @@ class KPIAssignmentHandler:
             'updated_at': str(assignment.updated_at),
         }
 
-
+#------------------------------------------------------------------------
+#    KPI FORMULA HANDLER
+#------------------------------------------------------------------------
 
 class KPIFormulaServiceHandler:
 
@@ -332,8 +346,12 @@ class KPIResultService:
         }
         filters = {k: v for k, v in filters.items() if v is not None}
 
-        if request.user.user_role == 'employee':
+        if request.user.role and request.user.role.name.lower() == 'employee':
+            # Employees can only see their own results
             filters['user_uuid'] = str(request.user.uuid)
+        elif getattr(request, 'is_line_manager', False) and request.department_scope:
+            # Line managers can only see results within their own department
+            filters['department_uuid'] = str(request.department_scope.uuid)
 
         results = KPIResultAccountService().get_all_results(**filters)
         return ResponseProvider.success(data=[cls._serialize(r) for r in results])
@@ -384,6 +402,3 @@ class KPIResultService:
             'created_at': str(result.created_at),
             'updated_at': str(result.updated_at),
         }
-
-
-
