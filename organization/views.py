@@ -5,10 +5,12 @@ from django.views.decorators.csrf import csrf_exempt
 from organization.services.services import TeamServiceHandler, DepartmentServiceHandler
 from services.utils.response_provider import ResponseProvider
 from utils.decorators.allowed_http_methods import allowed_http_methods
+from utils.decorators.rbac import require_roles
 
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
+@require_roles("admin")
 def create_department_view(request) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.create_department(request)
@@ -18,6 +20,7 @@ def create_department_view(request) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
+@require_roles("admin")
 def get_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.get_department(dept_uuid)
@@ -27,6 +30,7 @@ def get_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
+@require_roles("admin")
 def get_all_departments_view(request) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.get_all_departments()
@@ -36,6 +40,7 @@ def get_all_departments_view(request) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['PATCH', 'PUT'])
+@require_roles("admin")
 def update_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.update_department(request, dept_uuid)
@@ -45,6 +50,7 @@ def update_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['DELETE'])
+@require_roles("admin")
 def delete_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.delete_department(request, dept_uuid)
@@ -58,6 +64,7 @@ def delete_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
+@require_roles("admin")
 def create_team_view(request) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.create_team(request)
@@ -67,6 +74,7 @@ def create_team_view(request) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
+@require_roles("admin")
 def get_team_view(request, team_uuid: str) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.get_team(team_uuid)
@@ -76,6 +84,7 @@ def get_team_view(request, team_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
+@require_roles("admin")
 def get_all_teams_view(request) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.get_all_teams(request)
@@ -85,6 +94,7 @@ def get_all_teams_view(request) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['PATCH', 'PUT'])
+@require_roles("admin")
 def update_team_view(request, team_uuid: str) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.update_team(request, team_uuid)
@@ -94,6 +104,7 @@ def update_team_view(request, team_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['DELETE'])
+@require_roles("admin")
 def delete_team_view(request, team_uuid: str) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.delete_team(request, team_uuid)
@@ -103,6 +114,7 @@ def delete_team_view(request, team_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
+@require_roles("admin")
 def assign_user_to_team_view(request) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.assign_user_to_team(request)
