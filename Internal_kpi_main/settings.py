@@ -50,6 +50,7 @@ AUTH_USER_MODEL = 'accounts.User'
 
 
 MIDDLEWARE = [
+    'utils.middleware.JSONErrorMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -127,3 +128,23 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# ─── Email Configuration ──────────────────────────────────────────────────────
+if DEBUG:
+    # Development — prints emails to terminal instead of sending them
+    # Use this until you are ready to test with real Gmail
+    EMAIL_BACKEND      = 'django.core.mail.backends.console.EmailBackend'
+    DEFAULT_FROM_EMAIL = 'noreply@kpisystem.com'
+else:
+    # Production — sends real emails via Gmail SMTP
+    EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST          = 'smtp.gmail.com'
+    EMAIL_PORT          = 587
+    EMAIL_USE_TLS       = True
+    EMAIL_HOST_USER     = 'your_actual_email@gmail.com'      # replace this
+    EMAIL_HOST_PASSWORD = 'your_gmail_app_password'          # replace this
+    DEFAULT_FROM_EMAIL  = EMAIL_HOST_USER
+
+# HR receives a notification every time a performance summary is generated
+HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # replace this
+
