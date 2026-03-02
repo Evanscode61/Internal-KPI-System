@@ -2,6 +2,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth import get_user_model
 
 from performance.models import Notification
+from performance.services.dashboard_service import DashboardService
 from performance.services.performanceservice import PerformanceSummaryService
 from services.utils.response_provider import ResponseProvider
 from utils.decorators.allowed_http_methods import allowed_http_methods
@@ -16,6 +17,10 @@ User = get_user_model()
 @allowed_http_methods(['POST'])
 @require_roles('admin', 'hr')
 def generate_summary_view(request):
+    """
+        Generate a performance summary for a user, team, or department (POST).
+        Restricted to admin and hr only.
+        """
     try:
         return PerformanceSummaryService.generate_summary(request)
     except Exception as ex:
@@ -26,6 +31,11 @@ def generate_summary_view(request):
 @allowed_http_methods(['GET'])
 @require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
 def get_summary_view(request, summary_uuid: str):
+    """
+       Retrieve a single performance summary by UUID (GET).
+       Access is role-scoped, employees see only their own,
+       line managers see their department only, admin/hr see all.
+       """
     try:
         return PerformanceSummaryService.get_summary(request, summary_uuid)
     except Exception as ex:
@@ -52,7 +62,7 @@ def export_summaries_csv_view(request):
         return ResponseProvider.handle_exception(ex)
 
 
-# ── NOTIFICATION VIEWS ────────────────────────────────────────────────────────
+# ── NOTIFICATION VIEWS
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
@@ -162,6 +172,35 @@ def mark_all_notifications_read_view(request):
 
         return ResponseProvider.success(
             message = f'{updated} notifications marked as read'
+        )
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+
+@csrf_exempt
+@allowed_http_methods(['GET'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
+def dashboard_view(request):
+    """
+    Return a role-scoped performance dashboard (GET).
+    Optional query parameters are period start and period end.
+    Response scope by role:
+    admin / hr can see full company dashboard
+    Business/Tech LM can see department-scoped dashboard
+    employee can see personal dashboard
+    Returns a structured snapshot including overview stats,
+    department/team breakdowns, alert summary, top performers,
+    and employees needing attention — all in one call.
+    """
+    try:
+        data = DashboardService.get_dashboard(request)
+        if data is None:
+            return ResponseProvider.forbidden(
+                error='You do not have permission to view the dashboard'
+            )
+        return ResponseProvider.success(
+            message='Dashboard data retrieved successfully',
+            data=data
         )
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)

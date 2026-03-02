@@ -6,9 +6,9 @@ KpiAssignment, Department, and Team into a single structured
 snapshot. No new models required — queries what already exists.
 
 Role scoping:
-    admin / hr          → full company-wide dashboard
-    Business/Tech LM    → scoped to their department only
-    employee            → their own personal dashboard only
+    admin / hr can see full company-wide dashboard
+    Business/Tech LM are scoped to their department only
+    employee can see their own personal dashboard only
 """
 
 from django.contrib.auth import get_user_model
@@ -26,8 +26,6 @@ RATING_ORDER     = ['outstanding', 'good', 'satisfactory', 'needs_improvement', 
 
 
 class DashboardService:
-
-    # ── PUBLIC ENTRY POINTS ───────────────────────────────────────────────────
 
     @classmethod
     def get_dashboard(cls, request):
@@ -53,7 +51,7 @@ class DashboardService:
         else:
             return None  # caller handles forbidden
 
-    # ── COMPANY DASHBOARD (admin / hr) ────────────────────────────────────────
+    #  COMPANY DASHBOARD to be viewed by admin/hr
 
     @classmethod
     def _company_dashboard(cls, period_start=None, period_end=None):
@@ -78,12 +76,12 @@ class DashboardService:
             'needs_attention':  cls._build_needs_attention(results_qs, limit=5),
         }
 
-    # ── DEPARTMENT DASHBOARD (line managers) ──────────────────────────────────
+    # DEPARTMENT DASHBOARD  scoped to respective line managers
 
     @classmethod
     def _department_dashboard(cls, user, period_start=None, period_end=None):
         """
-        Department-scoped snapshot for line managers.
+        Department scoped snapshot for line managers.
         Only shows data within the manager's own department.
         """
         department = user.department
@@ -129,7 +127,7 @@ class DashboardService:
             'needs_attention':   cls._build_needs_attention(results_qs, limit=5),
         }
 
-    # ── EMPLOYEE DASHBOARD ────────────────────────────────────────────────────
+    #EMPLOYEE DASHBOARD scoped to individual employee
 
     @classmethod
     def _employee_dashboard(cls, user, period_start=None, period_end=None):
