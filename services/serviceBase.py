@@ -18,9 +18,12 @@ class ServiceBase(object):
     def create(self, *args, **kwargs):
         return self.manager.create(**kwargs)
 
-    def update(self, uuid, *args, **kwargs):
-        data_to_update = self.filter(uuid=uuid)
-        return data_to_update.update(**kwargs)
+    def update(self, uuid, **kwargs):
+        instance = self.manager.get(uuid=uuid)
+        for field, value in kwargs.items():
+            setattr(instance, field, value)
+        instance.save()
+        return instance
 
     def delete(self, uuid):
         queryset = self.manager.filter(uuid=uuid)

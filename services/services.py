@@ -3,6 +3,7 @@ from ipaddress import ip_address
 from ipaddress import ip_address
 from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth import get_user_model
+from django.db import transaction
 
 import kpis
 from Base.models import Status
@@ -188,7 +189,6 @@ class DepartmentService(ServiceBase):
 
         return department
 
-    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def update_department(self, dept_uuid: str, data: dict, triggered_by: User, request=None):
         department = self.get_by_uuid(dept_uuid)
 
@@ -690,9 +690,10 @@ class KPIResultAccountService(ServiceBase):
     def create_result(self, assignment_uuid: str, actual_value,
                       triggered_by: User, request=None):
 
+     with transaction.atomic():
         assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
 
-        # ── 0. Prevent duplicate submissions on the same assignment ──────────
+        # Prevent duplicate submissions on the same assignment ──────────
         existing = self.manager.filter(
             kpi_assignment = assignment,
             submitted_by   = triggered_by,
@@ -1256,7 +1257,7 @@ class RoleService(ServiceBase):
     @staticmethod
     def update_user_role(request, username, new_role):
         try:
-            user = User.objects.get(username=username)
+            user = User.objects.get(username=name)
         except User.DoesNotExist:
             return ResponseProvider.not_found(error="User not found")
 
@@ -1274,16 +1275,16 @@ class RoleService(ServiceBase):
                 triggered_by=None,
                 entity=user,
                 status_code='ACT',
-                message=f'Role updated for "{user.username}": {old_role} -> {new_role}',
+                message=f'Role updated for "{user.name}": {old_role} -> {new_role}',
                 ip_address=None,
-                metadata={'user_uuid': str(user.uuid), 'username': user.username, 'old_role': old_role, 'new_role': new_role}
+                metadata={'user_uuid': str(user.uuid), 'username': user.name, 'old_role': old_role, 'new_role': new_role}
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
         return ResponseProvider.success(
             message="User role updated successfully",
             data={
-                "username": user.username,
+                "username": user.name,
                 "email": user.email,
                 "role": user.role.name,
             }
