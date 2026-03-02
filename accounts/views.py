@@ -8,6 +8,7 @@ from accounts.models import Role, RefreshToken
 from services.services import UserService, RoleService, AuthService
 from services.utils.response_provider import ResponseProvider
 from utils.decorators.allowed_http_methods import allowed_http_methods
+from utils.decorators.rbac import require_roles
 
 User = get_user_model()
 user_service = UserService()
@@ -128,9 +129,9 @@ def user_logout_view(request):
 @csrf_exempt
 def reset_password_view(request):
     """
-    OTP-based password reset — two steps on the same endpoint (POST).
-    Step 1 (no otp in body): generate and email OTP.
-    Step 2 (otp in body):    verify OTP and set new password.
+    OTP-based password reset which has two steps on the same endpoint (POST).
+    Step 1 has no otp in the body generate and email OTP.
+    Step has the otp in the body to verify OTP and set new password.
     """
     if request.method != "POST":
         return ResponseProvider.bad_request(error="POST method required")
@@ -147,7 +148,7 @@ def reset_password_view(request):
         from services.services import OTPService, TransactionLogService
         from django.conf import settings
 
-        # ── Step 1: no OTP provided → generate and send ──────────────────
+        # no OTP provided → generate and send
         if not otp_code:
             otp           = OTPService.create_otp(username=username, purpose="password_reset")
             response_data = {}
@@ -159,7 +160,7 @@ def reset_password_view(request):
                 data=response_data
             )
 
-        # ── Step 2: OTP provided → verify and reset ──────────────────────
+        #  OTP provided → verify and reset
         if not new_password or not confirm_password:
             return ResponseProvider.bad_request(error="new_password and confirm_password are required")
         if new_password != confirm_password:
@@ -234,6 +235,7 @@ def request_otp_view(request):
 # ─── USER VIEWS ───────────────────────────────────────────────────────────────
 
 @csrf_exempt
+@require_roles('admin')
 def create_user_view(request):
     """Create a user directly (POST). Admin use."""
     if request.method != "POST":
@@ -262,6 +264,7 @@ def create_user_view(request):
 
 
 @csrf_exempt
+@require_roles("hr","admin")
 def list_users_view(request):
     """Return all users (GET). Admin only."""
     if request.method != "GET":
@@ -324,6 +327,7 @@ def view_user_profile(request, user_uuid):
 # ─── ROLE VIEWS ───────────────────────────────────────────────────────────────
 
 @csrf_exempt
+@require_roles('admin', 'hr')
 def create_role(request):
     """Create a new role (POST)."""
     if request.method != "POST":
@@ -351,6 +355,7 @@ def create_role(request):
 
 
 @csrf_exempt
+@require_roles("admin","hr")
 def delete_role_view(request, name: str):
     """Delete a role by name (DELETE)."""
     if request.method != "DELETE":
@@ -365,6 +370,7 @@ def delete_role_view(request, name: str):
 
 
 @csrf_exempt
+@require_roles("admin","hr")
 def update_role_view(request, name: str):
     """Assign a new role to a user identified by username (PUT)."""
     if request.method != "PUT":
@@ -385,6 +391,7 @@ def update_role_view(request, name: str):
 
 
 @csrf_exempt
+@require_roles("admin","hr")
 def list_roles_view(request):
     """Return all role names (GET)."""
     if request.method != "GET":
@@ -398,6 +405,7 @@ def list_roles_view(request):
 
 @csrf_exempt
 @allowed_http_methods(["POST"])
+@require_roles("admin","hr")
 def assign_role_view(request):
     """Assign a role to a user by username (POST)."""
     try:
