@@ -98,6 +98,12 @@ class KPIResults(BaseModel):
 
     class Meta:
         db_table = 'kpisResults'
+        constraints = [
+            models.UniqueConstraint(
+                fields = ['submitted_by', 'kpi_assignment'],
+                name = 'unique_submitted_by_kpi_assignment',
+            )
+        ]
 
 
 

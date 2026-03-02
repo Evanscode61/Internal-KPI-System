@@ -10,7 +10,6 @@ class AlertService:
     Checks a KPI result after it is saved and creates a KPIAlert
     if the rating warrants one. Then routes email notifications to
     the correct recipients based on the assignment type.
-
     Rules:
         Individual assignment → notify the employee
                                 notify manager if underperformance
