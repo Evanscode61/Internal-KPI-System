@@ -88,6 +88,8 @@ def token_refresh_view(request):
 
         if payload.get("type") != "refresh":
             return ResponseProvider.unauthorized(error="Invalid token type — refresh token required")
+        if not RefreshToken.objects.filter(token=refresh_token).exists():
+            return ResponseProvider.unauthorized(error="Token has been revoked")
 
         user = User.objects.get(pk=payload.get("user_id"))
         return ResponseProvider.success(
@@ -276,6 +278,7 @@ def list_users_view(request):
 
 
 @csrf_exempt
+@require_roles('admin')
 def delete_user_view(request, user_uuid):
     """Delete a user by UUID (DELETE). Admin only."""
     if request.method != "DELETE":
@@ -287,6 +290,7 @@ def delete_user_view(request, user_uuid):
 
 
 @csrf_exempt
+@require_roles('admin')
 def update_user_view(request, user_uuid):
     """Update a user's fields (PUT / PATCH). Admin only."""
     if request.method not in ("PUT", "PATCH"):
@@ -302,10 +306,14 @@ def update_user_view(request, user_uuid):
 
 
 @csrf_exempt
+@require_roles('admin','hr','Business Line_Manager','Tech_Line_Manager','employee')
 def view_user_profile(request, user_uuid):
     """Return a single user's profile (GET)."""
     if request.method != "GET":
         return ResponseProvider.bad_request(error="GET method required")
+    if request.user.role.name == 'employee' and str(request.user.uuid) != user_uuid:
+        return ResponseProvider.forbidden(error ="user not in employee")
+
     try:
         user = User.objects.select_related("role", "department", "team", "status").get(uuid=user_uuid)
         return ResponseProvider.success(data={

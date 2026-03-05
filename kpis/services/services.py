@@ -249,10 +249,8 @@ class KPIFormulaServiceHandler:
     def get_formula_by_kpi(cls, kpi_uuid: str) -> ResponseProvider:
         """
            Retrieve a formula by its associated KPI UUID.
-           Args:
-               kpi_uuid (str): UUID of the KPI.
-           Returns:
-               ResponseProvider: 200 Success with serialized formula data.
+           Args:kpi_uuid (str): UUID of the KPI.
+           Returns:ResponseProvider: 200 Success with serialized formula data.
            """
         formula = KPIFormulaService().get_by_kpi_uuid(kpi_uuid)
         return ResponseProvider.success(data=cls._serialize(formula))
@@ -276,7 +274,7 @@ class KPIFormulaServiceHandler:
         )
 
     """
-        Converting a KPIFormula Django model → JSON-safe dictionary
+        Converting a KPIFormula Django model to JSON-safe dictionary
     """
     @staticmethod
     def _serialize(formula) -> dict:

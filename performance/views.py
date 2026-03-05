@@ -15,7 +15,7 @@ User = get_user_model()
 
 @csrf_exempt
 @allowed_http_methods(['POST'])
-@require_roles('admin', 'hr')
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager')
 def generate_summary_view(request):
     """
         Generate a performance summary for a user, team, or department (POST).
@@ -131,7 +131,7 @@ def get_all_notifications_view(request):
 
 @csrf_exempt
 @allowed_http_methods(['PATCH'])
-@require_roles('admin', 'hr', 'business_Line_Manager', 'tech_Line_Manager', 'employee')
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
 def mark_notification_read_view(request, notification_id: int):
     """
     Mark a single notification as read.
@@ -158,7 +158,7 @@ def mark_notification_read_view(request, notification_id: int):
 
 @csrf_exempt
 @allowed_http_methods(['PATCH'])
-@require_roles('admin', 'hr', 'business_Line_Manager', 'tech_Line_Manager', 'employee')
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
 def mark_all_notifications_read_view(request):
     """
     Mark all of the logged in user's notifications as read at once.

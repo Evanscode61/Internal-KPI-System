@@ -97,7 +97,6 @@ class TeamService(ServiceBase):
 
         return team
 
-    @service_handler(require_auth=True, allowed_roles=["admin", ])
     def delete_team(self, team_uuid: str, triggered_by: User, request=None):
         team = self.get_by_uuid(team_uuid)
         team.delete()
@@ -164,7 +163,7 @@ class DepartmentService(ServiceBase):
     def get_by_uuid(self, dept_uuid: str):
             return self.manager.get(uuid=dept_uuid)
 
-    @service_handler(require_auth=True, allowed_roles=["admin", ])
+
     def create_department(self, name, description='', triggered_by: User = None, request=None):
         department = self.manager.create(
             name=name,
@@ -220,7 +219,7 @@ class DepartmentService(ServiceBase):
 
         return department
 
-    @service_handler(require_auth=True, allowed_roles=["admin",])
+
     def delete_department(self, dept_uuid: str, triggered_by: User, request=None):
         department = self.get_by_uuid(dept_uuid)
         department.delete()
@@ -396,7 +395,7 @@ class KPIAssignmentService(ServiceBase):
                 event_code ='kpi_assignment',
                 triggered_by=triggered_by,
                 entity=assignment,
-                status_code ='assigned successfully',
+                status_code ='ACT',
                 message = f'KPI "{kpi.kpi_name}" assigned',
                 ip_address = request.META.get('REMOTE_ADDR') if request else None,
                 metadata ={
@@ -619,7 +618,7 @@ class KPIResultAccountService(ServiceBase):
     @staticmethod
     def _get_active_formula(kpi):
         """Fetch the active formula linked to this KPI."""
-        return kpi.formula.filter(status__name='active').first()
+        return kpi.formula.filter(status__code='ACT').first()
 
     @staticmethod
     def _calculate_score(actual_value, kpi, formula=None):
@@ -690,90 +689,89 @@ class KPIResultAccountService(ServiceBase):
     def create_result(self, assignment_uuid: str, actual_value,
                       triggered_by: User, request=None):
 
-     with transaction.atomic():
-        assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
+        with transaction.atomic():
+            assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
 
-        # Prevent duplicate submissions on the same assignment ──────────
-        existing = self.manager.filter(
-            kpi_assignment = assignment,
-            submitted_by   = triggered_by,
-        ).first()
-        if existing:
-            raise ValueError(
-                f'You have already submitted a result for this KPI. '
-                f'Use the update endpoint to change your submission.'
+            # Prevent duplicate submissions on the same assignment
+            existing = self.manager.filter(
+                kpi_assignment=assignment,
+                submitted_by=triggered_by,
+            ).first()
+            if existing:
+                raise ValueError(
+                    f'You have already submitted a result for this KPI. '
+                    f'Use the update endpoint to change your submission.'
+                )
+
+            #  Validate the submitter belongs to the assignment target
+            if assignment.assigned_to:
+                # Individual assignment — only that specific user can submit
+                if triggered_by != assignment.assigned_to:
+                    raise PermissionError('This KPI is not assigned to you')
+                submitted_by = assignment.assigned_to
+
+            elif assignment.assigned_team:
+                # Team assignment — submitter must be a member of that team
+                if triggered_by.team != assignment.assigned_team:
+                    raise PermissionError('You are not a member of the assigned team')
+                submitted_by = triggered_by
+
+            elif assignment.assigned_department:
+                # Department assignment — submitter must be in that department
+                if triggered_by.department != assignment.assigned_department:
+                    raise PermissionError('You are not a member of the assigned department')
+                submitted_by = triggered_by
+
+            else:
+                raise ValueError('KPI assignment has no valid target')
+            # ─────────────────────────────────────────────────────────────────────
+
+            kpi = assignment.kpi
+            formula = self._get_active_formula(kpi)
+            calculated_score = self._calculate_score(actual_value, kpi, formula)
+            rating = self._derive_comment(calculated_score, formula)
+
+            result = self.manager.create(
+                kpi_assignment=assignment,
+                actual_value=actual_value,
+                calculated_score=calculated_score,
+                rating=rating,
+                recorded_by=triggered_by,
+                submitted_by=submitted_by,  # ← tracks who submitted
             )
 
-        # ── 1. Validate the submitter belongs to the assignment target ────────
-        if assignment.assigned_to:
-            # Individual assignment — only that specific user can submit
-            if triggered_by != assignment.assigned_to:
-                raise PermissionError('This KPI is not assigned to you')
-            submitted_by = assignment.assigned_to
+            #  Trigger alert check
+            try:
+                from performance.alert_service import AlertService
+                AlertService.check_and_create_alert(result)
+            except Exception as e:
+                print(f'[AlertService ERROR] {e}')
 
-        elif assignment.assigned_team:
-            # Team assignment — submitter must be a member of that team
-            if triggered_by.team != assignment.assigned_team:
-                raise PermissionError('You are not a member of the assigned team')
-            submitted_by = triggered_by
+            # Log the transaction
+            try:
+                TransactionLogService.log(
+                    event_code='kpi_result_submitted',
+                    triggered_by=triggered_by,
+                    entity=result,
+                    status_code='ACT',
+                    message=f'Result submitted for KPI "{kpi.kpi_name}"',
+                    ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                    metadata={
+                        'result_id': str(result.uuid),
+                        'kpi_name': kpi.kpi_name,
+                        'assignment_id': str(assignment.uuid),
+                        'actual_value': str(actual_value),
+                        'calculated_score': str(calculated_score),
+                        'rating': rating,
+                        'submitted_by': submitted_by.username,
+                        'formula_used': formula.formula_name if formula else 'default',
+                    }
+                )
+            except Exception as e:
+                print(f'[TransactionLog ERROR] {e}')
+            # ─────────────────────────────────────────────────────────────────────
 
-        elif assignment.assigned_department:
-            # Department assignment — submitter must be in that department
-            if triggered_by.department != assignment.assigned_department:
-                raise PermissionError('You are not a member of the assigned department')
-            submitted_by = triggered_by
-
-        else:
-            raise ValueError('KPI assignment has no valid target')
-        # ─────────────────────────────────────────────────────────────────────
-
-        kpi = assignment.kpi
-        formula = self._get_active_formula(kpi)
-        calculated_score = self._calculate_score(actual_value, kpi, formula)
-        rating = self._derive_comment(calculated_score, formula)
-
-        result = self.manager.create(
-            kpi_assignment=assignment,
-            actual_value=actual_value,
-            calculated_score=calculated_score,
-            rating=rating,
-            recorded_by=triggered_by,
-            submitted_by=submitted_by,  # ← tracks who submitted
-        )
-
-        #  Trigger alert check
-        try:
-            from performance.alert_service import AlertService
-            AlertService.check_and_create_alert(result)
-        except Exception as e:
-            print(f'[AlertService ERROR] {e}')
-        #
-
-        # ── 3. Log the transaction ────────────────────────────────────────────
-        try:
-            TransactionLogService.log(
-                event_code='kpi_result_submitted',
-                triggered_by=triggered_by,
-                entity=result,
-                status_code='ACT',
-                message=f'Result submitted for KPI "{kpi.kpi_name}"',
-                ip_address=request.META.get('REMOTE_ADDR') if request else None,
-                metadata={
-                    'result_id': str(result.uuid),
-                    'kpi_name': kpi.kpi_name,
-                    'assignment_id': str(assignment.uuid),
-                    'actual_value': str(actual_value),
-                    'calculated_score': str(calculated_score),
-                    'rating': rating,
-                    'submitted_by': submitted_by.username,
-                    'formula_used': formula.formula_name if formula else 'default',
-                }
-            )
-        except Exception as e:
-            print(f'[TransactionLog ERROR] {e}')
-        # ─────────────────────────────────────────────────────────────────────
-
-        return result
+            return result
 
 
 
@@ -1013,7 +1011,7 @@ class UserService(ServiceBase):
         user doesn't exist, returns success if user is deleted successfully.
         """
         try:
-            user = User.objects.get(username=uuid)
+            user = User.objects.get(uuid=uuid)
         except User.DoesNotExist:
             return ResponseProvider.not_found(error=f"User '{uuid}' not found")
 
@@ -1257,7 +1255,7 @@ class RoleService(ServiceBase):
     @staticmethod
     def update_user_role(request, username, new_role):
         try:
-            user = User.objects.get(username=name)
+            user = User.objects.get(username=username)
         except User.DoesNotExist:
             return ResponseProvider.not_found(error="User not found")
 
@@ -1277,14 +1275,14 @@ class RoleService(ServiceBase):
                 status_code='ACT',
                 message=f'Role updated for "{user.name}": {old_role} -> {new_role}',
                 ip_address=None,
-                metadata={'user_uuid': str(user.uuid), 'username': user.name, 'old_role': old_role, 'new_role': new_role}
+                metadata={'user_uuid': str(user.uuid), 'username': user.username, 'old_role': old_role, 'new_role': new_role}
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
         return ResponseProvider.success(
             message="User role updated successfully",
             data={
-                "username": user.name,
+                "username": user.username, 
                 "email": user.email,
                 "role": user.role.name,
             }

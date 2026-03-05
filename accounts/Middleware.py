@@ -10,7 +10,8 @@ class JWTAuthenticationMiddleware:
         self.get_response = get_response  # only assignment
           #
     def __call__(self, request):
-        if request.path in ["/api/auth/login/", "/api/auth/register_user/","/api/auth/refresh/"]:
+        if request.path in ["/api/auth/login/", "/api/auth/register_user/","/api/auth/refresh/","/api/auth/reset_password/",
+"/api/auth/otp/request/",]:
             return self.get_response(request)
         # Only check protected paths
         if request.path.startswith("/api/"):

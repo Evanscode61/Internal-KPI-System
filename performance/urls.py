@@ -10,8 +10,8 @@ from performance.views import (
 urlpatterns = [
     path('performance/summaries/generate/', generate_summary_view, name='generate_summary'),
     path('performance/summaries/get_all/', get_all_summaries_view, name='get_all_summaries'),
-    path('performance/summaries/<str:summary_uuid>/',get_summary_view,name='get_summary'),
     path('performance/summaries/export/csv/',export_summaries_csv_view, name='export_summaries_csv'),
+    path('performance/summaries/<str:summary_uuid>/',get_summary_view,name='get_summary'),
     path('dashboard/', dashboard_view, name='dashboard'),
     path('notifications/get/',
          get_notifications_view,

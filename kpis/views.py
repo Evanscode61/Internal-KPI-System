@@ -158,7 +158,7 @@ def get_all_kpi_results_view(request) -> ResponseProvider:
 
 @csrf_exempt
 @allowed_http_methods(['PUT','PATCH'])
-@require_roles('admin', 'Business_Line_Manager', 'Tech_Line_Manager')
+@require_roles('admin', 'Business_Line_Manager', 'Tech_Line_Manager','employee')
 def update_kpi_result_view(request, result_uuid: str) -> ResponseProvider:
     try:
         return KPIResultService.update_result(request, result_uuid)

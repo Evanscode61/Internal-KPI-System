@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (user_login_view, token_refresh_view, user_logout_view, create_user_view,
                     register_user_view, create_role, delete_role_view, list_users_view, update_user_view,
                     update_role_view, delete_user_view, reset_password_view, view_user_profile, list_roles_view,
-                    request_otp_view)
+                    request_otp_view, assign_role_view)
 
 urlpatterns = [
     path("login/", user_login_view ,name="login"),
@@ -24,6 +24,7 @@ urlpatterns = [
     path("role/create/", create_role, name="create_role"),
     path("role/delete/<str:name>/",delete_role_view, name="delete_role"),
     path("role/list/", list_roles_view, name="list_roles"),
+    path("role/assign/", assign_role_view, name="assign_role"),
 
 
 ]

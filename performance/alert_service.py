@@ -10,12 +10,9 @@ class AlertService:
     Checks a KPI result after it is saved and creates a KPIAlert
     if the rating warrants one. Then routes email notifications to
     the correct recipients based on the assignment type.
-    Rules:
-        Individual assignment → notify the employee
-                                notify manager if underperformance
-        Team assignment       → notify the team member who submitted
-                                notify manager if underperformance
-        Department assignment → notify the department line manager
+    Individual assignment is notified to employee  and line manager if there is underperformance
+    For Team assignment the team member who submitted and the manager is notified for any underperformance
+    For Department assignment notify the department line manager.
     """
 
     ALERT_TYPE_MAP = {
@@ -36,7 +33,7 @@ class AlertService:
         alert_type = cls.ALERT_TYPE_MAP.get(result.rating)
         if not alert_type:
             return None
-        # Check for genuine improvement — only fire if previous result was underperformance
+        # Check for genuine improvement only fire if previous result was underperformance
         if alert_type == 'Improved performance':
             from kpis.models import KPIResults
             previous_result = (
