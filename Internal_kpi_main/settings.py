@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'kpis',
     'organization',
     'performance',
@@ -50,6 +51,7 @@ AUTH_USER_MODEL = 'accounts.User'
 
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'utils.middleware.JSONErrorMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -148,3 +150,7 @@ else:
 # HR receives a notification every time a performance summary is generated
 HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # replace this
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+]
+CORS_ALLOW_CREDENTIALS = True

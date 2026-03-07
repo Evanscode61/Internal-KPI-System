@@ -1059,10 +1059,10 @@ class UserService(ServiceBase):
         return user
 
     @staticmethod
-    @service_handler(require_auth=True, allowed_roles=["admin"])
     def list_users(request):
         users = list(User.objects.select_related("role")
-                     .values("uuid", "username", "email", "role__name"))
+                     .values("uuid", "username", "email", "role__name", "department__name", "team__team_name",
+                             "first_name", "last_name"))
         return ResponseProvider.success("Users retrieved successfully", users)
 
     @staticmethod
@@ -1126,20 +1126,15 @@ class UserService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return user
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # services/services.py  — paste this class just before class RoleService
-    # ─────────────────────────────────────────────────────────────────────────────
 
 class OTPService:
     """
     Handles OTP generation, email sending, and verification.
     Used for password reset and first-login flows.
-    Flow:
-        1. create_otp(username, purpose)
-               → invalidates old OTPs, generates 6-digit code,
-                 saves to DB with 10-min expiry, emails the code.
-        2. verify_otp(username, code, purpose)
-               → validates the code, marks it used, returns the user.
+    Flow: create_otp(username, purpose),invalidates old OTPs, generates 6-digit code,
+    saves to DB with 10-min expiry, emails the code.
+    verify_otp(username, code, purpose)
+    validates the code, marks it used, returns the user.
     """
 
     OTP_EXPIRY_MINUTES = 10
