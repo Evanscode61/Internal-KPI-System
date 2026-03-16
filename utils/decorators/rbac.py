@@ -22,19 +22,19 @@ def require_roles(*allowed_roles):
         @wraps(view_func)
         def wrapper(request, *args, **kwargs):
 
-            # 1. authentication check
+            #  authentication check
             if not request.user or not request.user.is_authenticated:
                 return ResponseProvider.unauthorized(
                     message="Authentication required"
                 )
 
-            # 2. role assignment check
+            #  role assignment check
             if not request.user.role:
                 return ResponseProvider.forbidden(
                     message="No role assigned to this user"
                 )
 
-            # 3. active role check
+            #  active role check
             if not request.user.role.is_active:
                 return ResponseProvider.forbidden(
                     message="Your role has been deactivated. Contact your administrator"
@@ -46,7 +46,7 @@ def require_roles(*allowed_roles):
                     message=f"Access denied. Required roles: {', '.join(allowed_roles)}"
                 )
 
-            # 5. inject role flags into request
+            #  inject role flags into request
             user_role = request.user.role.name.lower()
 
             request.is_line_manager = user_role in (
@@ -56,7 +56,7 @@ def require_roles(*allowed_roles):
             request.is_employee    = user_role == 'employee'
             request.is_admin_or_hr = user_role in ('admin', 'hr')
 
-            # 6. inject department scope for line managers
+            #  inject department scope for line managers
             if request.is_line_manager:
                 if not request.user.department:
                     return ResponseProvider.forbidden(

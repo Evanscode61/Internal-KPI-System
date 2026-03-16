@@ -14,6 +14,8 @@ from organization.models import Department, Team
 from services.serviceBase import ServiceBase, service_handler
 from services.utils.response_provider import ResponseProvider
 import json
+from django.db import models
+
 
 User = get_user_model()
 #-----------------------------------------------------------------------------
@@ -260,7 +262,7 @@ class KPIService(ServiceBase):
 
     def create_kpi(self, kpi_name, measurement_type, calculation_type, weight_value,
                    kpi_description='', department_uuid=None, min_threshold=None,
-                   max_threshold=None, triggered_by: User = None, request=None):
+                   max_threshold=None,frequency ='monthly', triggered_by: User = None, request=None):
 
         department = DepartmentService().get_by_uuid(department_uuid) if department_uuid else None
 
@@ -270,6 +272,7 @@ class KPIService(ServiceBase):
             kpi_name=kpi_name,
             kpi_description=kpi_description,
             department=department,
+            frequency=frequency,
             measurement_type=measurement_type,
             calculation_type=calculation_type,
             weight_value=weight_value,
@@ -332,22 +335,16 @@ class KPIService(ServiceBase):
             print(f"[TransactionLog ERROR] {e}")
         return kpi
 
-
     def get_all_kpis(self, **filters):
         qs = self.manager.all()
-
-        if filters.get("department_uuid"):
-            qs = qs.filter(department__uuid=filters["department_uuid"])
-
-        if filters.get("measurement_type"):
-            qs = qs.filter(measurement_type=filters["measurement_type"])
-
-        if filters.get("calculation_type"):
-            qs = qs.filter(calculation_type=filters["calculation_type"])
-
-        if filters.get("kpi_name"):
-            qs = qs.filter(name__icontains=filters["kpi_name"])
-
+        if filters.get('department_uuid'):
+            qs = qs.filter(department__uuid=filters['department_uuid'])
+        if filters.get('measurement_type'):
+            qs = qs.filter(measurement_type=filters['measurement_type'])
+        if filters.get('calculation_type'):
+            qs = qs.filter(calculation_type=filters['calculation_type'])
+        if filters.get('kpi_name'):
+            qs = qs.filter(kpi_name__icontains=filters['kpi_name'])
         return qs
 #_____________________________________________________________
 # KPI ASSIGNMENT SERVICE
@@ -364,23 +361,21 @@ class KPIAssignmentService(ServiceBase):
     def get_by_uuid(self, assignment_uuid: str):
         return self.manager.get(uuid=assignment_uuid)
 
-
-    def create_kpi_assignment(self, kpi_uuid, period_start, assigned_to_uuid=None,
-                          assigned_team_uuid=None, assigned_department_uuid=None,
-                          status=None, triggered_by: User = None, request=None):
+    def create_kpi_assignment(self, kpi_uuid, period_start, period_end=None, assigned_to_uuid=None,
+                              assigned_team_uuid=None, assigned_department_uuid=None,
+                              status=None, triggered_by: User = None, request=None):
         kpi = KPIService().get_by_uuid(kpi_uuid)
-        """
-        Creates a KPI assignment for a user, team, or department for a given period.
-        Fetches the KPI and optional assignees using their UUIDs.
-        Only provided assignment targets are attached to the record.
-        Stores the assignment with the specified status.
-        `triggered_by` and `request` may be used for auditing/logging.
-        Returns the created KpiAssignment instance.
-        """
 
-        assigned_to         = User.objects.get(uuid=assigned_to_uuid) if assigned_to_uuid else None
-        assigned_team       = TeamService().get_by_uuid(assigned_team_uuid) if assigned_team_uuid else None
-        assigned_department = DepartmentService().get_by_uuid(assigned_department_uuid) if assigned_department_uuid else None
+        assigned_to = User.objects.get(uuid=assigned_to_uuid) if assigned_to_uuid else None
+        assigned_team = TeamService().get_by_uuid(assigned_team_uuid) if assigned_team_uuid else None
+        assigned_department = DepartmentService().get_by_uuid(
+            assigned_department_uuid) if assigned_department_uuid else None
+
+        # Resolve status string to Status FK object
+        status_obj = None
+        if status:
+            from Base.models import Status
+            status_obj = Status.objects.filter(name__iexact=status).first()
 
         assignment = self.manager.create(
             kpi=kpi,
@@ -388,55 +383,58 @@ class KPIAssignmentService(ServiceBase):
             assigned_team=assigned_team,
             assigned_department=assigned_department,
             period_start=period_start,
-            status=status,
+            period_end=period_end,
+            status=status_obj,
         )
         try:
             TransactionLogService.log(
-                event_code ='kpi_assignment',
+                event_code='kpi_assignment',
                 triggered_by=triggered_by,
                 entity=assignment,
-                status_code ='ACT',
-                message = f'KPI "{kpi.kpi_name}" assigned',
-                ip_address = request.META.get('REMOTE_ADDR') if request else None,
-                metadata ={
-                    'assignment_id' : str(assignment.uuid),
+                status_code='ACT',
+                message=f'KPI "{kpi.kpi_name}" assigned',
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'assignment_id': str(assignment.uuid),
                     'kpi_id': str(kpi.uuid),
-                    'assigned_to' : assigned_to.role if assigned_to else None,
-                    'assigned_team' : assigned_team.team_name if assigned_team else None,
-                    'assigned_department' : assigned_department.name if assigned_department else None,
-                    'period_start' : str(period_start),
-                    'assigned_by': triggered_by.role,
-
-
+                    'assigned_to': assigned_to.username if assigned_to else None,
+                    'assigned_team': assigned_team.team_name if assigned_team else None,
+                    'assigned_department': assigned_department.name if assigned_department else None,
+                    'period_start': str(period_start),
+                    'assigned_by': triggered_by.username if triggered_by else None,
                 }
-
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
-
     def update_assignment(self, assignment_uuid: str, data: dict, triggered_by: User, request=None):
         assignment = self.get_by_uuid(assignment_uuid)
-        """
-        Update an existing KPI assignment.
-        Retrieves the assignment by UUID, applies the provided field updates,
-        and saves only the modified fields. Previous values are captured for
-        audit purposes and a transaction log is recorded for the update action.
-        Args:
-            assignment_uuid (str): UUID of the assignment to update.
-            data (dict): Fields and values to be updated.
-            triggered_by (User): User performing the update.
-            request (HttpRequest, optional): Request context for logging/auditing.
-        Returns:
-            KpiAssignment: The updated assignment instance.
-        """
 
         old_values = {field: str(getattr(assignment, field, None)) for field in data}
 
+        # Resolve FK fields from UUID strings to model instances
+        if 'assigned_to_uuid' in data:
+            assignment.assigned_to = User.objects.get(uuid=data.pop('assigned_to_uuid')) if data[
+                'assigned_to_uuid'] else None
+        if 'assigned_team_uuid' in data:
+            assignment.assigned_team = TeamService().get_by_uuid(data.pop('assigned_team_uuid')) if data[
+                'assigned_team_uuid'] else None
+        if 'assigned_department_uuid' in data:
+            assignment.assigned_department = DepartmentService().get_by_uuid(data.pop('assigned_department_uuid')) if \
+            data['assigned_department_uuid'] else None
+        if 'kpi_uuid' in data:
+            assignment.kpi = KPIService().get_by_uuid(data.pop('kpi_uuid')) if data['kpi_uuid'] else None
+        if 'status' in data:
+            from Base.models import Status
+            assignment.status = Status.objects.filter(name__iexact=data.pop('status')).first()
+
+        # Set remaining plain fields (period_start, period_end)
         for field, value in data.items():
             setattr(assignment, field, value)
-        assignment.save(update_fields=list(data.keys()))
+
+        assignment.save()
+
         try:
             TransactionLogService.log(
                 event_code='kpi_assignment_updated',
@@ -449,52 +447,53 @@ class KPIAssignmentService(ServiceBase):
                     'assignment_id': str(assignment.uuid),
                     'kpi_name': assignment.kpi.kpi_name,
                     'updated_by': triggered_by.email,
-                    'changed_fields': list(data.keys()),
+                    'changed_fields': list(old_values.keys()),
                     'old_values': old_values,
-                    'new_values': {k: str(v) for k, v in data.items()},
                 }
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
         return assignment
 
+    def delete_assignment(self, assignment_uuid: str, triggered_by=None, request=None):
+        assignment = self.get_by_uuid(assignment_uuid)
+
+        try:
+            TransactionLogService.log(
+                event_code='kpi_assignment_deleted',
+                triggered_by=triggered_by,
+                entity=assignment,
+                status_code='ACT',
+                message=f"KPI assignment '{assignment.kpi.kpi_name}' deleted",
+                ip_address=request.META.get('REMOTE_ADDR') if request else None,
+                metadata={
+                    'assignment_uuid': str(assignment_uuid),
+                    'kpi_name': assignment.kpi.kpi_name,
+                    'deleted_by': triggered_by.username if triggered_by else None,
+                }
+            )
+        except Exception as e:
+            print(f"[TransactionLog ERROR] {e}")
+
+        assignment.delete()
+        return assignment
+
 
     def get_all_assignments(self, **filters):
-        """
-        Retrieve assignments with optional filtering.
-
-        This method returns a queryset of assignments and allows filtering
-        based on the provided keyword arguments.
-
-        Supported Filters:
-            user_uuid (str):
-                Filters assignments assigned to a specific user.
-            team_uuid (str):
-                Filters assignments assigned to a specific team.
-            department_uuid (str):
-                Filters assignments assigned to a specific department.
-            status (str):
-                Filters assignments by their current status.
-        Args:
-            **filters:
-                Arbitrary keyword arguments used to filter assignments.
-        Returns:
-            QuerySet:
-                A Django queryset containing assignments that match
-                the provided filters.
-        Example:
-            service.get_all_assignments(user_uuid="123e4567")
-            service.get_all_assignments(team_uuid="team-uuid", status="pending")
-        """
         qs = self.manager.all()
         if 'user_uuid' in filters:
             qs = qs.filter(assigned_to__uuid=filters['user_uuid'])
         if 'team_uuid' in filters:
             qs = qs.filter(assigned_team__uuid=filters['team_uuid'])
         if 'department_uuid' in filters:
-            qs = qs.filter(assigned_department__uuid=filters['department_uuid'])
+            dept_uuid = filters['department_uuid']
+            qs = qs.filter(
+                models.Q(assigned_department__uuid=dept_uuid) |
+                models.Q(assigned_to__department__uuid=dept_uuid) |
+                models.Q(assigned_team__department__uuid=dept_uuid)
+            )
         if 'status' in filters:
-            qs = qs.filter(status=filters['status'])
+            qs = qs.filter(status__name=filters['status'])
         return qs
 
 
@@ -603,16 +602,28 @@ class KPIResultAccountService(ServiceBase):
 
     def get_all_results(self, **filters):
         qs = self.manager.all()
+
         if 'user_uuid' in filters:
             qs = qs.filter(kpi_assignment__assigned_to__uuid=filters['user_uuid'])
+
         if 'team_uuid' in filters:
             qs = qs.filter(kpi_assignment__assigned_team__uuid=filters['team_uuid'])
+
         if 'department_uuid' in filters:
-            qs = qs.filter(kpi_assignment__assigned_department__uuid=filters['department_uuid'])
+            from django.db.models import Q
+            dept = filters['department_uuid']
+            qs = qs.filter(
+                Q(kpi_assignment__assigned_department__uuid=dept) |
+                Q(kpi_assignment__assigned_to__department__uuid=dept) |
+                Q(kpi_assignment__assigned_team__department__uuid=dept)
+            )
+
         if 'period_start' in filters:
-            qs = qs.filter(recorded_at__gte=filters['period_start'])
+            qs = qs.filter(created_at__gte=filters['period_start'])
+
         if 'period_end' in filters:
-            qs = qs.filter(recorded_at__lte=filters['period_end'])
+            qs = qs.filter(created_at__lte=filters['period_end'])
+
         return qs
 
     @staticmethod
@@ -692,16 +703,20 @@ class KPIResultAccountService(ServiceBase):
         with transaction.atomic():
             assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
 
-            # Prevent duplicate submissions on the same assignment
+
             existing = self.manager.filter(
                 kpi_assignment=assignment,
                 submitted_by=triggered_by,
             ).first()
             if existing:
-                raise ValueError(
-                    f'You have already submitted a result for this KPI. '
-                    f'Use the update endpoint to change your submission.'
-                )
+                if existing.approval_status == 'rejected':
+                    # Allow resubmission — delete old rejected result
+                    existing.delete()
+                else:
+                    raise ValueError(
+                        'You have already submitted a result for this KPI. '
+                        'Use the update endpoint to change your submission.'
+                    )
 
             #  Validate the submitter belongs to the assignment target
             if assignment.assigned_to:
@@ -739,6 +754,11 @@ class KPIResultAccountService(ServiceBase):
                 recorded_by=triggered_by,
                 submitted_by=submitted_by,  # ← tracks who submitted
             )
+            from Base.models import Status
+            completed_status = Status.objects.filter(code='COM').first()
+            if completed_status:
+                assignment.status = completed_status
+                assignment.save(update_fields=['status'])
 
             #  Trigger alert check
             try:
@@ -769,25 +789,24 @@ class KPIResultAccountService(ServiceBase):
                 )
             except Exception as e:
                 print(f'[TransactionLog ERROR] {e}')
-            # ─────────────────────────────────────────────────────────────────────
+
 
             return result
 
-
-
     def update_result(self, result_uuid: str, data: dict, triggered_by: User, request=None):
         result = self.get_by_uuid(result_uuid)
-        kpi    = result.kpi_assignment.kpi
+        kpi = result.kpi_assignment.kpi
 
         old_values = {'actual_value': str(result.actual_value)}
 
         if 'actual_value' in data:
-            formula                 = self._get_active_formula(kpi)
-            result.actual_value     = data['actual_value']
+            formula = self._get_active_formula(kpi)
+            result.actual_value = data['actual_value']
             result.calculated_score = self._calculate_score(data['actual_value'], kpi, formula)
-            result.comment          = self._derive_comment(result.calculated_score, formula)
+            result.rating = self._derive_comment(result.calculated_score, formula)
+            result.comment = ''
 
-        result.save(update_fields=['actual_value', 'calculated_score', 'comment'])
+        result.save(update_fields=['actual_value', 'calculated_score', 'rating', 'comment'])
 
         try:
             TransactionLogService.log(
@@ -798,21 +817,21 @@ class KPIResultAccountService(ServiceBase):
                 message=f'Result updated for KPI "{kpi.kpi_name}"',
                 ip_address=request.META.get('REMOTE_ADDR') if request else None,
                 metadata={
-                    'result_id':  str(result.uuid),
-                    'kpi_name':   kpi.kpi_name,
+                    'result_id': str(result.uuid),
+                    'kpi_name': kpi.kpi_name,
                     'updated_by': triggered_by.email,
                     'old_values': old_values,
                     'new_values': {
-                        'actual_value':     str(result.actual_value),
+                        'actual_value': str(result.actual_value),
                         'calculated_score': str(result.calculated_score),
-                        'comment':          result.comment,
+                        'rating': result.rating,
                     },
                 }
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
 
-        return self._build_result_response(result)
+        return result
 
     def export_csv(self, **filters):
         import csv, io
@@ -866,14 +885,17 @@ class KPIFormulaService(ServiceBase):
              Retrieve a KPI formula associated with a specific KPI UUID."""
         return self.manager.filter(kpi__uuid=kpi_uuid).first()
 
+    from Base.models import Status
     def create_formula(self, kpi_uuid, formula_expression, data_source='',
                        triggered_by: User = None, request=None):
         kpi = KPIService().get_by_uuid(kpi_uuid)
+        active_status = Status.objects.filter(code='ACT').first()
 
         formula = self.manager.create(
             kpi=kpi,
             formula_expression=formula_expression,
             data_source=data_source,
+            status=active_status,
         )
 
         try:
@@ -1057,13 +1079,18 @@ class UserService(ServiceBase):
         user.role = role
         user.save()
         return user
-
     @staticmethod
     def list_users(request):
-        users = list(User.objects.select_related("role")
-                     .values("uuid", "username", "email", "role__name", "department__name", "team__team_name",
-                             "first_name", "last_name"))
-        return ResponseProvider.success("Users retrieved successfully", users)
+        qs = User.objects.select_related("role", "department", "team")
+
+        # Line managers only see users in their department
+        if getattr(request, 'is_line_manager', False) and request.department_scope:
+            qs = qs.filter(department=request.department_scope)
+
+        users = list(qs.values("uuid", "username", "email", "role__name", "department__name", "team__team_name",
+                               "first_name", "last_name"))
+        return ResponseProvider.success("Users retrieved successfully", data=users)
+
 
     @staticmethod
     @service_handler(require_auth=True, allowed_roles=["admin"])
@@ -1384,26 +1411,56 @@ class PerformanceSummaryAccountService(ServiceBase):
 
         return qs
 
+    @staticmethod
+    def _derive_summary_rating(weighted_score, results):
+        """
+        Derive the overall summary rating using weighted average
+        of actual formula thresholds from all KPIs in the summary.
+        Falls back to default thresholds if no active formula found.
+        """
+        formulas_with_weights = []
+        for r in results:
+            formula = r.kpi_assignment.kpi.formula.filter(status__code='ACT').first()
+            weight = float(r.kpi_assignment.kpi.weight_value or 1)
+            if formula:
+                formulas_with_weights.append((formula, weight))
+
+        total_fw = sum(w for _, w in formulas_with_weights)
+
+        if formulas_with_weights and total_fw:
+            outstanding = sum(float(f.outstanding_threshold or 90) * w for f, w in formulas_with_weights) / total_fw
+            good = sum(float(f.good_threshold or 75) * w for f, w in formulas_with_weights) / total_fw
+            satisfactory = sum(float(f.satisfactory_threshold or 60) * w for f, w in formulas_with_weights) / total_fw
+            needs_imp = sum(float(f.needs_improvement_threshold or 40) * w for f, w in formulas_with_weights) / total_fw
+        else:
+            outstanding, good, satisfactory, needs_imp = 90, 75, 60, 40
+
+        s = float(weighted_score)
+        if s >= outstanding:    return 'outstanding'
+        if s >= good:           return 'good'
+        if s >= satisfactory:   return 'satisfactory'
+        if s >= needs_imp:      return 'needs_improvement'
+        return 'poor'
+
     # ── INDIVIDUAL ────────────────────────────────────────────────────────────
 
     def generate_individual_summary(self, user_uuid, period_start, period_end,
                                     triggered_by=None, request=None):
-        """
-        Aggregate KPI scores from results where the KPI was
-        assigned directly to this individual user.
-        Notifies the employee and HR after generation.
-        """
-        user = User.objects.select_related(
-            'department', 'team'
-        ).get(uuid=user_uuid)
+        user = User.objects.select_related('department', 'team').get(uuid=user_uuid)
 
         results = KPIResults.objects.filter(
-            submitted_by                = user,
-            kpi_assignment__assigned_to = user,
-            created_at__gte             = period_start,
-            created_at__lte             = period_end,
-            calculated_score__isnull    = False,
+            submitted_by=user,
+            kpi_assignment__assigned_to=user,
+            created_at__gte=period_start,
+            created_at__lte=period_end,
+            calculated_score__isnull=False,
+            approval_status='approved',
         ).select_related('kpi_assignment__kpi')
+        if not results.exists():
+            raise ValueError(
+                'No approved KPI results found for this period. '
+                'Ensure results have been submitted and approved before generating a summary.'
+            )
 
         total_weighted = sum(
             float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
@@ -1414,16 +1471,18 @@ class PerformanceSummaryAccountService(ServiceBase):
             for r in results
         )
         weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+        rating = self._derive_summary_rating(weighted_score, results)
 
         summary, _ = self.manager.update_or_create(
-            user         = user,
-            period_start = period_start,
-            period_end   = period_end,
-            defaults     = {
-                'summary_type':   PerformanceSummary.SummaryType.INDIVIDUAL,
-                'department':     user.department,
-                'team':           user.team,
+            user=user,
+            period_start=period_start,
+            period_end=period_end,
+            defaults={
+                'summary_type': PerformanceSummary.SummaryType.INDIVIDUAL,
+                'department': user.department,
+                'team': user.team,
                 'weighted_score': weighted_score,
+                'rating': rating,
             }
         )
 
@@ -1435,20 +1494,21 @@ class PerformanceSummaryAccountService(ServiceBase):
 
     def generate_team_summary(self, team_uuid, period_start, period_end,
                               triggered_by=None, request=None):
-        """
-        Aggregate KPI scores from results where the KPI was
-        assigned to this team.
-        Notifies all team members, the line manager, and HR.
-        """
         from organization.models import Team
         team = Team.objects.select_related('department').get(uuid=team_uuid)
 
         results = KPIResults.objects.filter(
-            kpi_assignment__assigned_team = team,
-            created_at__gte               = period_start,
-            created_at__lte               = period_end,
-            calculated_score__isnull      = False,
+            kpi_assignment__assigned_team=team,
+            created_at__gte=period_start,
+            created_at__lte=period_end,
+            calculated_score__isnull=False,
+            approval_status='approved',
         ).select_related('kpi_assignment__kpi')
+        if not results.exists():
+            raise ValueError(
+                'No approved KPI results found for this period. '
+                'Ensure results have been submitted and approved before generating a summary.'
+            )
 
         total_weighted = sum(
             float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
@@ -1459,15 +1519,17 @@ class PerformanceSummaryAccountService(ServiceBase):
             for r in results
         )
         weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+        rating = self._derive_summary_rating(weighted_score, results)
 
         summary, _ = self.manager.update_or_create(
-            team         = team,
-            period_start = period_start,
-            period_end   = period_end,
-            defaults     = {
-                'summary_type':   PerformanceSummary.SummaryType.TEAM,
-                'department':     team.department,
+            team=team,
+            period_start=period_start,
+            period_end=period_end,
+            defaults={
+                'summary_type': PerformanceSummary.SummaryType.TEAM,
+                'department': team.department,
                 'weighted_score': weighted_score,
+                'rating': rating,
             }
         )
 
@@ -1479,20 +1541,21 @@ class PerformanceSummaryAccountService(ServiceBase):
 
     def generate_department_summary(self, department_uuid, period_start, period_end,
                                     triggered_by=None, request=None):
-        """
-        Aggregate KPI scores from results where the KPI was
-        assigned to this department.
-        Notifies the department line manager and HR.
-        """
         from organization.models import Department
         department = Department.objects.get(uuid=department_uuid)
 
         results = KPIResults.objects.filter(
-            kpi_assignment__assigned_department = department,
-            created_at__gte                     = period_start,
-            created_at__lte                     = period_end,
-            calculated_score__isnull            = False,
+            kpi_assignment__assigned_department=department,
+            created_at__gte=period_start,
+            created_at__lte=period_end,
+            calculated_score__isnull=False,
+            approval_status='approved',
         ).select_related('kpi_assignment__kpi')
+        if not results.exists():
+            raise ValueError(
+                'No approved KPI results found for this period. '
+                'Ensure results have been submitted and approved before generating a summary.'
+            )
 
         total_weighted = sum(
             float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
@@ -1503,21 +1566,22 @@ class PerformanceSummaryAccountService(ServiceBase):
             for r in results
         )
         weighted_score = round(total_weighted / total_weights, 4) if total_weights else 0.0
+        rating = self._derive_summary_rating(weighted_score, results)
 
         summary, _ = self.manager.update_or_create(
-            department   = department,
-            period_start = period_start,
-            period_end   = period_end,
-            defaults     = {
-                'summary_type':   PerformanceSummary.SummaryType.DEPARTMENT,
+            department=department,
+            period_start=period_start,
+            period_end=period_end,
+            defaults={
+                'summary_type': PerformanceSummary.SummaryType.DEPARTMENT,
                 'weighted_score': weighted_score,
+                'rating': rating,
             }
         )
 
         self._log(summary, triggered_by, request)
         self._notify_department(summary, department)
         return summary
-
     # ── NOTIFICATION HELPERS ──────────────────────────────────────────────────
 
     def _notify_individual(self, summary, user):

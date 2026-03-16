@@ -31,6 +31,7 @@ class PerformanceSummary(BaseModel):
     period_start   = models.DateField()
     period_end     = models.DateField()
     weighted_score = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    rating = models.CharField(max_length=20, blank=True, default='')
     status         = models.ForeignKey(Status, on_delete=models.SET_NULL,
                          null=True, blank=True)
 

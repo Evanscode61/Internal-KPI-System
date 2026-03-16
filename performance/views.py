@@ -44,7 +44,7 @@ def get_summary_view(request, summary_uuid: str):
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
-@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager')
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager','employee')
 def get_all_summaries_view(request):
     try:
         return PerformanceSummaryService.get_all_summaries(request)
@@ -58,6 +58,15 @@ def get_all_summaries_view(request):
 def export_summaries_csv_view(request):
     try:
         return PerformanceSummaryService.export_summaries_csv(request)
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+@csrf_exempt
+@allowed_http_methods(['DELETE'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager','employee')
+def delete_summary_view(request, summary_uuid: str):
+    try:
+        return PerformanceSummaryService.delete_summary(request, summary_uuid)
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
 
@@ -202,5 +211,21 @@ def dashboard_view(request):
             message='Dashboard data retrieved successfully',
             data=data
         )
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+@csrf_exempt
+@allowed_http_methods(['DELETE'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
+def delete_notification_view(request, notification_id: int):
+    try:
+        notification = Notification.objects.get(
+            id        = notification_id,
+            recipient = request.user,
+        )
+        notification.delete()
+        return ResponseProvider.success(message='Notification deleted')
+    except Notification.DoesNotExist:
+        return ResponseProvider.not_found(error='Notification not found')
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)

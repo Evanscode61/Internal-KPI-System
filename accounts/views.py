@@ -266,9 +266,10 @@ def create_user_view(request):
 
 
 @csrf_exempt
-@require_roles("hr","admin")
+@require_roles("hr","admin",'Tech_Line_Manager',"Business_Line_Manager")
+@allowed_http_methods(["GET"])
 def list_users_view(request):
-    """Return all users (GET). Admin only."""
+    """Return all users (GET)"""
     if request.method != "GET":
         return ResponseProvider.bad_request(error="GET method required")
     try:

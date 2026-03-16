@@ -4,7 +4,7 @@ from performance.views import (
     get_summary_view,
     get_all_summaries_view,
     export_summaries_csv_view, get_notifications_view, get_all_notifications_view, mark_notification_read_view,
-    mark_all_notifications_read_view, dashboard_view,
+    mark_all_notifications_read_view, dashboard_view, delete_summary_view, delete_notification_view,
 )
 
 urlpatterns = [
@@ -13,6 +13,7 @@ urlpatterns = [
     path('performance/summaries/export/csv/',export_summaries_csv_view, name='export_summaries_csv'),
     path('performance/summaries/<str:summary_uuid>/',get_summary_view,name='get_summary'),
     path('dashboard/', dashboard_view, name='dashboard'),
+path('performance/summaries/delete/<str:summary_uuid>/', delete_summary_view, name='delete_summary'),
     path('notifications/get/',
          get_notifications_view,
          name='get_notifications'),
@@ -28,4 +29,5 @@ urlpatterns = [
     path('notifications/read_all/',
          mark_all_notifications_read_view,
          name='mark_all_notifications_read'),
+path('notifications/<int:notification_id>/delete/',  delete_notification_view, name='delete_notification'),
 ]

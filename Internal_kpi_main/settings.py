@@ -133,8 +133,7 @@ STATIC_URL = 'static/'
 
 # ─── Email Configuration ──────────────────────────────────────────────────────
 if DEBUG:
-    # Development — prints emails to terminal instead of sending them
-    # Use this until you are ready to test with real Gmail
+    # Development prints emails to terminal instead of sending them
     EMAIL_BACKEND      = 'django.core.mail.backends.console.EmailBackend'
     DEFAULT_FROM_EMAIL = 'noreply@kpisystem.com'
 else:
@@ -143,12 +142,12 @@ else:
     EMAIL_HOST          = 'smtp.gmail.com'
     EMAIL_PORT          = 587
     EMAIL_USE_TLS       = True
-    EMAIL_HOST_USER     = 'your_actual_email@gmail.com'      # replace this
-    EMAIL_HOST_PASSWORD = 'your_gmail_app_password'          # replace this
+    EMAIL_HOST_USER     = 'your_actual_email@gmail.com'      # actual email
+    EMAIL_HOST_PASSWORD = 'your_gmail_app_password'          # password of actual email
     DEFAULT_FROM_EMAIL  = EMAIL_HOST_USER
 
 # HR receives a notification every time a performance summary is generated
-HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # replace this
+HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # email of the hr
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",

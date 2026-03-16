@@ -49,7 +49,7 @@ class KpiAssignment(BaseModel):
 class KPIFormula(BaseModel):
     formula_name = models.CharField(max_length=30,null=True,blank=True)
     kpi = models.ForeignKey(KpiDefinition, on_delete=models.CASCADE,related_name= "formula" )
-    period_start = models.DateField(help_text='Start date',null=True,blank = True)
+    period_start =models.DateField(help_text='Start date',null=True,blank = True)
     formula_expression = models.TextField( help_text="Example: (actual / target) * 100")
     data_source = models.CharField(
         max_length=100,blank =True,
@@ -94,7 +94,23 @@ class KPIResults(BaseModel):
                            on_delete=models.SET_NULL,
                            related_name='submitted_kpi_results',
                            help_text='The individual member submitting under a team/dept assignment')
-    # ───────────────────────────────────────────────────────────────────
+
+    class ApprovalStatus(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
+
+    approval_status = models.CharField(
+        choices=ApprovalStatus.choices,
+        max_length=20,
+        default='pending'
+    )
+    manager_comment = models.TextField(blank=True, null=True)
+    reviewed_by = models.ForeignKey(
+        User, null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='reviewed_kpi_results'
+    )
 
     class Meta:
         db_table = 'kpisResults'

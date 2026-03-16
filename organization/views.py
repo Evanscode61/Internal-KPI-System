@@ -30,7 +30,7 @@ def get_department_view(request, dept_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
-@require_roles("admin")
+@require_roles("admin","Tech_Line_Manager","Business_Line_Manager")
 def get_all_departments_view(request) -> ResponseProvider | Any:
     try:
         return DepartmentServiceHandler.get_all_departments()
@@ -84,7 +84,7 @@ def get_team_view(request, team_uuid: str) -> ResponseProvider | Any:
 
 @csrf_exempt
 @allowed_http_methods(['GET'])
-@require_roles("admin")
+@require_roles("admin","Tech_Line_Manager","Business_Line_Manager")
 def get_all_teams_view(request) -> ResponseProvider | Any:
     try:
         return TeamServiceHandler.get_all_teams(request)

@@ -2,6 +2,8 @@ from django.contrib.auth import get_user_model
 from services.services import PerformanceSummaryAccountService
 from services.utils.response_provider import ResponseProvider
 from utils.common import get_clean_request_data
+from kpis.models import KPIResults
+
 from organization.models import Department
 from performance.models import PerformanceSummary
 
@@ -179,6 +181,22 @@ class PerformanceSummaryService:
 
         return PerformanceSummaryAccountService().export_csv(**filters)
 
+    @classmethod
+    def delete_summary(cls, request, summary_uuid):
+        summary = PerformanceSummaryAccountService().get_by_uuid(summary_uuid)
+
+        role = request.user.role.name.lower() if request.user.role else ''
+
+        # Manager can only delete summaries within their own department
+        if role in ('business_line_manager', 'tech_line_manager'):
+            if not summary.department or summary.department != request.user.department:
+                return ResponseProvider.forbidden(
+                    error='You can only delete summaries within your department'
+                )
+
+        summary.delete()
+        return ResponseProvider.success(message='Summary deleted successfully')
+
     # ── ROLE FILTER ───────────────────────────────────────────────────────────
 
     @classmethod
@@ -217,35 +235,75 @@ class PerformanceSummaryService:
 
     @staticmethod
     def _serialize(summary):
-        """
-        Convert a PerformanceSummary instance to a JSON-safe dict.
-        Returns different fields depending on summary_type.
-        """
         base = {
-            'uuid':           str(summary.uuid),
-            'summary_type':   summary.summary_type,
-            'period_start':   str(summary.period_start),
-            'period_end':     str(summary.period_end),
+            'uuid': str(summary.uuid),
+            'summary_type': summary.summary_type,
+            'period_start': str(summary.period_start),
+            'period_end': str(summary.period_end),
             'weighted_score': str(summary.weighted_score),
-            'created_at':     str(summary.created_at),
-            'updated_at':     str(summary.updated_at),
+            'rating': summary.rating,
+            'created_at': str(summary.created_at),
+            'updated_at': str(summary.updated_at),
         }
 
+        # ── KPI breakdown — fetch approved results that make up this summary
+        if summary.summary_type == 'individual' and summary.user:
+            results = KPIResults.objects.filter(
+                submitted_by=summary.user,
+                kpi_assignment__assigned_to=summary.user,
+                created_at__gte=summary.period_start,
+                created_at__lte=summary.period_end,
+                approval_status='approved',
+                calculated_score__isnull=False,
+            ).select_related('kpi_assignment__kpi')
+
+        elif summary.summary_type == 'team' and summary.team:
+            results = KPIResults.objects.filter(
+                kpi_assignment__assigned_team=summary.team,
+                created_at__gte=summary.period_start,
+                created_at__lte=summary.period_end,
+                approval_status='approved',
+                calculated_score__isnull=False,
+            ).select_related('kpi_assignment__kpi')
+
+        elif summary.summary_type == 'department' and summary.department:
+            results = KPIResults.objects.filter(
+                kpi_assignment__assigned_department=summary.department,
+                created_at__gte=summary.period_start,
+                created_at__lte=summary.period_end,
+                approval_status='approved',
+                calculated_score__isnull=False,
+            ).select_related('kpi_assignment__kpi')
+        else:
+            results = []
+
+        base['kpi_breakdown'] = [
+            {
+                'kpi_name': r.kpi_assignment.kpi.kpi_name,
+                'actual_value': str(r.actual_value),
+                'calculated_score': str(r.calculated_score),
+                'rating': r.rating,
+                'weight': float(r.kpi_assignment.kpi.weight_value or 1),
+                'measurement_type': r.kpi_assignment.kpi.measurement_type,
+                'submitted_by': r.submitted_by.username if r.submitted_by else None,
+            }
+            for r in results
+        ]
+
+        # ── Type specific fields
         if summary.summary_type == 'individual':
             base.update({
-                'user_uuid':       str(summary.user.uuid) if summary.user else None,
-                'username':        summary.user.username if summary.user else None,
+                'user_uuid': str(summary.user.uuid) if summary.user else None,
+                'username': summary.user.username if summary.user else None,
                 'department_name': summary.department.name if summary.department else None,
-                'team_name':       summary.team.team_name if summary.team else None,
+                'team_name': summary.team.team_name if summary.team else None,
             })
-
         elif summary.summary_type == 'team':
             base.update({
-                'team_uuid':       str(summary.team.uuid) if summary.team else None,
-                'team_name':       summary.team.team_name if summary.team else None,
+                'team_uuid': str(summary.team.uuid) if summary.team else None,
+                'team_name': summary.team.team_name if summary.team else None,
                 'department_name': summary.department.name if summary.department else None,
             })
-
         elif summary.summary_type == 'department':
             base.update({
                 'department_uuid': str(summary.department.uuid) if summary.department else None,

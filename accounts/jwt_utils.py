@@ -12,7 +12,7 @@ def generate_access_token(user):
         "user_id": str(user.pk),
         "username": user.username,
         "role": user.role.name if user.role else None,
-        "exp": datetime.utcnow() + timedelta(minutes=15),
+        "exp": datetime.utcnow() + timedelta(hours=24),
         "iat": datetime.utcnow(),
     }
 
