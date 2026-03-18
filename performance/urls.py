@@ -4,7 +4,8 @@ from performance.views import (
     get_summary_view,
     get_all_summaries_view,
     export_summaries_csv_view, get_notifications_view, get_all_notifications_view, mark_notification_read_view,
-    mark_all_notifications_read_view, dashboard_view, delete_summary_view, delete_notification_view,
+    mark_all_notifications_read_view, dashboard_view, delete_summary_view, delete_notification_view, resolve_alert_view,
+    get_all_alerts_view, resolve_all_alerts_view,
 )
 
 urlpatterns = [
@@ -29,5 +30,9 @@ path('performance/summaries/delete/<str:summary_uuid>/', delete_summary_view, na
     path('notifications/read_all/',
          mark_all_notifications_read_view,
          name='mark_all_notifications_read'),
-path('notifications/<int:notification_id>/delete/',  delete_notification_view, name='delete_notification'),
+    path('notifications/<int:notification_id>/delete/',  delete_notification_view, name='delete_notification'),
+    path('alerts/all/',                    get_all_alerts_view,    name='get_all_alerts'),
+    path('alerts/<int:alert_id>/resolve/', resolve_alert_view,     name='resolve_alert'),
+    path('alerts/resolve_all/',            resolve_all_alerts_view, name='resolve_all_alerts'),
 ]
+

@@ -20,6 +20,14 @@ class KPIDefinitionHandler:
             required_fields={'kpi_name','measurement_type','calculation_type','weight_value','kpi_description','department_uuid','min_threshold','max_threshold'},
         )
         service = KPIService()
+        min_threshold = data.get('min_threshold')
+        max_threshold = data.get('max_threshold')
+
+        if min_threshold and max_threshold:
+            if float(min_threshold) == float(max_threshold):
+                return ResponseProvider.bad_request(
+                    message='Min threshold and max threshold cannot be equal — this would cause division by zero in formula calculations.'
+                )
 
         kpi = service.create_kpi(
             kpi_name=data['kpi_name'],
@@ -226,14 +234,18 @@ class KPIAssignmentHandler:
         data = [cls._serialize(a) for a in assignments]
         return ResponseProvider.success(data=data)
 
-
-
     @staticmethod
     def _serialize(assignment) -> dict:
         return {
             'uuid': str(assignment.uuid),
             'kpi_uuid': str(assignment.kpi.uuid),
             'kpi_name': assignment.kpi.kpi_name,
+            'kpi_description': assignment.kpi.kpi_description or '',
+            'measurement_type': assignment.kpi.measurement_type or '',
+            'weight_value': float(assignment.kpi.weight_value) if assignment.kpi.weight_value else None,
+            'target_value': float(assignment.target_value) if assignment.target_value else None,
+            'min_threshold': float(assignment.kpi.min_threshold) if assignment.kpi.min_threshold else None,
+            'max_threshold': float(assignment.kpi.max_threshold) if assignment.kpi.max_threshold else None,
             'assigned_to_uuid': str(assignment.assigned_to.uuid) if assignment.assigned_to else None,
             'assigned_to_username': assignment.assigned_to.username if assignment.assigned_to else None,
             'assigned_team_uuid': str(assignment.assigned_team.uuid) if assignment.assigned_team else None,
@@ -244,8 +256,8 @@ class KPIAssignmentHandler:
             'period_start': str(assignment.period_start) if assignment.period_start else None,
             'period_end': str(assignment.period_end) if assignment.period_end else None,
             'status': assignment.status.name if assignment.status else None,
-            'created_at': str(assignment.created_at),
-            'updated_at': str(assignment.updated_at),
+            'created_at': assignment.created_at.strftime('%Y-%m-%d %H:%M') if assignment.created_at else None,
+            'updated_at': assignment.updated_at.strftime('%Y-%m-%d %H:%M') if assignment.updated_at else None,
         }
 
 #------------------------------------------------------------------------
@@ -267,6 +279,7 @@ class KPIFormulaServiceHandler:
         formula = KPIFormulaService().create_formula(
             kpi_uuid,
             formula_expression,
+            formula_template=data.get('formula_template'),
             data_source=data.get('data_source', ''),
             triggered_by=request.user,
             request=request
@@ -285,18 +298,15 @@ class KPIFormulaServiceHandler:
             kpi = KpiDefinition.objects.filter(uuid=kpi_uuid).first()
             if not kpi or kpi.department != request.department_scope:
                 return ResponseProvider.forbidden(message='Access denied')
+
         formula = KPIFormulaService().get_by_kpi_uuid(kpi_uuid)
+
+        # Return null data if no formula exists instead of crashing
+        if not formula:
+            return ResponseProvider.success(data=None)
+
         return ResponseProvider.success(data=cls._serialize(formula))
 
-    """@classmethod
-    def get_formula_by_kpi(cls, kpi_uuid: str) -> ResponseProvider:
-    
-           Retrieve a formula by its associated KPI UUID.
-           Args:kpi_uuid (str): UUID of the KPI.
-           Returns:ResponseProvider: 200 Success with serialized formula data.
-
-        formula = KPIFormulaService().get_by_kpi_uuid(kpi_uuid)
-        return ResponseProvider.success(data=cls._serialize(formula))"""
 
     @classmethod
     def update_formula(cls, request, formula_uuid: str) -> ResponseProvider:
@@ -321,14 +331,17 @@ class KPIFormulaServiceHandler:
     """
     @staticmethod
     def _serialize(formula) -> dict:
+        if not formula:
+            return None
         return {
             'uuid': str(formula.uuid),
             'kpi_uuid': str(formula.kpi.uuid),
             'kpi_name': formula.kpi.kpi_name,
+            'formula_template' :formula.formula_template,
             'formula_expression': formula.formula_expression,
             'data_source': formula.data_source,
-            'created_at': str(formula.created_at),
-            'updated_at': str(formula.updated_at),
+            'created_at': formula.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'updated_at': formula.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
         }
 
     @classmethod
@@ -450,6 +463,34 @@ class KPIResultService:
         result.manager_comment = data.get('manager_comment', '')
         result.reviewed_by     = request.user
         result.save(update_fields=['approval_status', 'manager_comment', 'reviewed_by'])
+
+        # ── Notify employee of approval or rejection
+        try:
+            from performance.models import Notification
+            employee = result.submitted_by or result.kpi_assignment.assigned_to
+            if employee:
+                kpi_name = result.kpi_assignment.kpi.kpi_name
+                comment = data.get('manager_comment', '')
+                if approval_status == 'approved':
+                    message = (
+                        f'Your result for "{kpi_name}" has been approved. '
+                        f'Score: {result.calculated_score}% — Rated {result.rating}.'
+                    )
+                else:
+                    message = (
+                        f'Your result for "{kpi_name}" has been rejected by your manager. '
+                        f'{("Reason: " + comment + ".") if comment else ""} '
+                        f'Please resubmit with the correct value.'
+                    )
+                Notification.objects.create(
+                    recipient=employee,
+                    notification_type='kpi_alert',
+                    message=message,
+                    is_read=False,
+                )
+        except Exception as e:
+            print(f'[Notification ERROR] {e}')
+
         # If rejected set assignment back to Active so employee can resubmit
         from Base.models import Status
         if approval_status == 'rejected':

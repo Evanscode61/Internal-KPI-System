@@ -362,11 +362,14 @@ class DashboardService:
             for r in recent
         ]
 
-    # ── UTILITIES ─────────────────────────────────────────────────────────────
-
     @staticmethod
     def _filter_results(period_start, period_end):
-        qs = KPIResults.objects.filter(calculated_score__isnull=False)
+        # Only count approved results that are not soft deleted
+        qs = KPIResults.objects.filter(
+            calculated_score__isnull=False,
+            is_deleted=False,
+            approval_status='approved'
+        )
         if period_start:
             qs = qs.filter(created_at__date__gte=period_start)
         if period_end:
@@ -377,9 +380,9 @@ class DashboardService:
     def _filter_assignments(period_start, period_end):
         qs = KpiAssignment.objects.all()
         if period_start:
-            qs = qs.filter(period_start__gte=period_start)
+            qs = qs.filter(period_end__gte=period_start)  # ← was period_start__gte
         if period_end:
-            qs = qs.filter(period_end__lte=period_end)
+            qs = qs.filter(period_start__lte=period_end)  # ← was period_end__lte
         return qs
 
     @staticmethod

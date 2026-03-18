@@ -137,7 +137,7 @@ if DEBUG:
     EMAIL_BACKEND      = 'django.core.mail.backends.console.EmailBackend'
     DEFAULT_FROM_EMAIL = 'noreply@kpisystem.com'
 else:
-    # Production — sends real emails via Gmail SMTP
+    # Production sends real emails via Gmail SMTP
     EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
     EMAIL_HOST          = 'smtp.gmail.com'
     EMAIL_PORT          = 587
@@ -151,5 +151,7 @@ HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # email of the hr
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:5173",
 ]
 CORS_ALLOW_CREDENTIALS = True

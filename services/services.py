@@ -406,6 +406,51 @@ class KPIAssignmentService(ServiceBase):
             )
         except Exception as e:
             print(f"[TransactionLog ERROR] {e}")
+        # ── Notify employee when KPI is assigned
+        try:
+            from performance.models import Notification
+            if assigned_to:
+                Notification.objects.create(
+                    recipient=assigned_to,
+                    notification_type='kpi_alert',
+                    message=(
+                        f'A new KPI has been assigned to you: "{kpi.kpi_name}". '
+                        f'Period: {period_start} to {period_end or "TBD"}. '
+                        f'Please log in to view your assignment and submit your result.'
+                    ),
+                    is_read=False,
+                )
+            elif assigned_team:
+                # Notify all team members
+                team_members = User.objects.filter(team=assigned_team)
+                for member in team_members:
+                    Notification.objects.create(
+                        recipient=member,
+                        notification_type='kpi_alert',
+                        message=(
+                            f'A new KPI has been assigned to your team "{assigned_team.team_name}": '
+                            f'"{kpi.kpi_name}". '
+                            f'Period: {period_start} to {period_end or "TBD"}.'
+                        ),
+                        is_read=False,
+                    )
+            elif assigned_department:
+                # Notify all department members
+                dept_members = User.objects.filter(department=assigned_department)
+                for member in dept_members:
+                    Notification.objects.create(
+                        recipient=member,
+                        notification_type='kpi_alert',
+                        message=(
+                            f'A new KPI has been assigned to your department "{assigned_department.name}": '
+                            f'"{kpi.kpi_name}". '
+                            f'Period: {period_start} to {period_end or "TBD"}.'
+                        ),
+                        is_read=False,
+                    )
+        except Exception as e:
+            print(f'[Notification ERROR] {e}')
+
         return assignment
 
     def update_assignment(self, assignment_uuid: str, data: dict, triggered_by: User, request=None):
@@ -641,27 +686,38 @@ class KPIResultAccountService(ServiceBase):
             actual = float(actual_value)
             target = float(kpi.max_threshold) if kpi.max_threshold else 1
             weight = float(kpi.weight_value) if kpi.weight_value else 1.0
+            min_t = float(kpi.min_threshold) if kpi.min_threshold else 0
+            max_t = float(kpi.max_threshold) if kpi.max_threshold else 1
+
+            # ── Guard against division by zero
+            if max_t == min_t:
+                print(f'[Formula WARNING] max_threshold equals min_threshold '
+                      f'for KPI "{kpi.kpi_name}". Cannot calculate score.')
+                return None
 
             if formula and formula.formula_expression:
                 context = {
-                    'actual':        actual,
-                    'target':        target,
-                    'weight':        weight,
-                    'min_threshold': float(kpi.min_threshold) if kpi.min_threshold else 0,
-                    'max_threshold': float(kpi.max_threshold) if kpi.max_threshold else 1,
+                    'actual': actual,
+                    'target': target,
+                    'weight': weight,
+                    'min_threshold': min_t,
+                    'max_threshold': max_t,
                 }
-                score = simple_eval(formula.formula_expression, names=context)
+                score = simple_eval(formula.formula_expression, names=context,functions ={'min':min, 'max':max,'abs':abs})
             else:
                 # fallback if no active formula found
-                max_t = target or actual or 1
-                score = (actual / max_t) * 100 * weight
+                max_val = target or actual or 1
+                score = (actual / max_val) * 100
 
-            # clamp score between 0 and 300 — prevents negatives on over-budget KPIs
-            score = max(0.0, min(float(score), 300.0))
+            # clamp score between 0 and 100
+            score = max(0.0, min(float(score), 100.0))
             return round(float(score), 4)
 
+        except ZeroDivisionError:
+            print(f'[Formula ERROR] Division by zero for KPI "{kpi.kpi_name}"')
+            return None
         except Exception as e:
-            print(f"[Formula Calculation ERROR] {e}")
+            print(f'[Formula Calculation ERROR] {e}')
             return None
 
     @staticmethod
@@ -885,15 +941,62 @@ class KPIFormulaService(ServiceBase):
              Retrieve a KPI formula associated with a specific KPI UUID."""
         return self.manager.filter(kpi__uuid=kpi_uuid).first()
 
-    from Base.models import Status
-    def create_formula(self, kpi_uuid, formula_expression, data_source='',
+    @staticmethod
+    def _validate_formula(expression):
+        """
+        Test the formula with safe dummy values before saving.
+        Ensures it returns a numeric result and only uses allowed variables.
+        """
+        from simpleeval import simple_eval
+        import re
+
+        # Only allow these variable names
+        allowed_vars = {'actual', 'target', 'weight', 'min_threshold', 'max_threshold'}
+        allowed_functions = {'abs', 'round', 'int', 'float'}
+
+
+        # Extract all word tokens from expression
+        used_vars = set(re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expression))
+        invalid_vars = used_vars - allowed_vars
+        if invalid_vars:
+            raise ValueError(
+                f"Formula contains invalid variables: {', '.join(invalid_vars)}. "
+                f"Allowed variables are: actual, target, weight, min_threshold, max_threshold"
+            )
+
+        # Test with safe dummy values
+        test_context = {
+            'actual': 75.0,
+            'target': 100.0,
+            'weight': 1.0,
+            'min_threshold': 0.0,
+            'max_threshold': 100.0,
+        }
+
+        try:
+            result = simple_eval(expression, names=test_context,functions ={'min':min, 'max':max,'abs':abs})
+        except ZeroDivisionError:
+            raise ValueError(
+                'Formula causes division by zero with test values. '
+                'Check your min_threshold and max_threshold values.'
+            )
+        except Exception as e:
+            raise ValueError(f'Formula is invalid: {str(e)}')
+
+        if not isinstance(result, (int, float)):
+            raise ValueError('Formula must return a numeric value.')
+
+        return True
+    def create_formula(self, kpi_uuid, formula_expression,formula_template=None, data_source='',
                        triggered_by: User = None, request=None):
         kpi = KPIService().get_by_uuid(kpi_uuid)
+        self._validate_formula(formula_expression)
         active_status = Status.objects.filter(code='ACT').first()
 
         formula = self.manager.create(
             kpi=kpi,
             formula_expression=formula_expression,
+            formula_template =formula_template,
             data_source=data_source,
             status=active_status,
         )
@@ -929,6 +1032,8 @@ class KPIFormulaService(ServiceBase):
                 - Logs the update operation in the transaction log system"""
 
         formula = self.get_by_uuid(formula_uuid)
+        if 'formula_expression' in data:
+            self._validate_formula(data['formula_expression'])
 
         old_values = {field: str(getattr(formula, field, None)) for field in data}
 

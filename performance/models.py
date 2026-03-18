@@ -103,6 +103,13 @@ class KPIAlert(models.Model):
     is_resolved = models.BooleanField(default=False)
     resolved_at = models.DateTimeField(null=True, blank=True)
     status = models.ForeignKey(Status, on_delete=models.CASCADE, null=True)
+    resolved_by = models.ForeignKey(
+        'accounts.User',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='resolved_alerts'
+    )
+    resolution_note = models.TextField(blank=True, null=True)
 
     def __str__(self):
         return f"{self.alert_type} alert for {self.kpi_assignment}"

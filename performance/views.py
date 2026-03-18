@@ -229,3 +229,38 @@ def delete_notification_view(request, notification_id: int):
         return ResponseProvider.not_found(error='Notification not found')
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
+from performance.services.alert_resolution_service import AlertResolutionService
+
+# ── ALERT VIEWS ───────────────────────────────────────────────────────────────
+
+@csrf_exempt
+@allowed_http_methods(['GET'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager')
+def get_all_alerts_view(request):
+    """Return all KPI alerts scoped by role (GET)."""
+    try:
+        return AlertResolutionService.get_all_alerts(request)
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+
+@csrf_exempt
+@allowed_http_methods(['PATCH'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager')
+def resolve_alert_view(request, alert_id: int):
+    """Resolve a single KPI alert with optional resolution note (PATCH)."""
+    try:
+        return AlertResolutionService.resolve_alert(request, alert_id)
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+
+@csrf_exempt
+@allowed_http_methods(['PATCH'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager')
+def resolve_all_alerts_view(request):
+    """Resolve all unresolved alerts scoped by role (PATCH)."""
+    try:
+        return AlertResolutionService.resolve_all_alerts(request)
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)

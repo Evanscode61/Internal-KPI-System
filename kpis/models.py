@@ -1,3 +1,4 @@
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
 from Base.models import BaseModel,Status
 from organization.models import Department, Team
@@ -17,7 +18,13 @@ class KpiDefinition(BaseModel):
     frequency = models.CharField(choices=Frequency.choices, max_length=20,default=Frequency.MONTHLY)
     kpi_description = models.TextField(blank=True)
     calculation_type = models.CharField(max_length=50,null=True ,blank=True)
-    weight_value = models.DecimalField(max_digits=5, decimal_places=2,default=0)
+    weight_value =  models.DecimalField(
+    max_digits=4,
+    decimal_places=1,
+    default=1,
+    validators=[MinValueValidator(1), MaxValueValidator(10)],
+    help_text='Weight between 1 and 10'
+)
     measurement_type = models.CharField(max_length=50,help_text='% ,hours, number')
     min_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     max_threshold = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
@@ -54,6 +61,20 @@ class KPIFormula(BaseModel):
     data_source = models.CharField(
         max_length=100,blank =True,
         help_text="Example: manual_entry, jira_api,")
+
+    class FormulaTemplate(models.TextChoices):
+        HIGHER = 'higher', 'Higher is Better'
+        LOWER = 'lower', 'Lower is Better'
+        TASK = 'task', 'Task Completion'
+        PROGRESS = 'progress', 'Progress Above Minimum'
+        CUSTOM = 'custom', 'Advanced Custom Formula'
+
+    formula_template = models.CharField(
+        max_length=20,
+        choices=FormulaTemplate.choices,
+        null=True,
+        blank=True,
+    )
     status = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True)
     outstanding_threshold = models.DecimalField(max_digits=5, decimal_places=2,
                                                 null=True, blank=True,
