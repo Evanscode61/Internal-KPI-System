@@ -184,6 +184,15 @@ def export_kpi_results_csv_view(request) -> ResponseProvider:
         return ResponseProvider.handle_exception(ex)
 
 @csrf_exempt
+@allowed_http_methods(['DELETE'])
+@require_roles('admin', 'hr', 'Business_Line_Manager', 'Tech_Line_Manager', 'employee')
+def delete_kpi_result_view(request, result_uuid: str):
+    try:
+        return KPIResultService().delete_result(request, result_uuid)
+    except Exception as ex:
+        return ResponseProvider.handle_exception(ex)
+
+@csrf_exempt
 @allowed_http_methods(['PATCH'])
 @require_roles('Business_Line_Manager', 'Tech_Line_Manager', 'admin', 'hr')
 def approve_reject_kpi_result_view(request, result_uuid: str) -> ResponseProvider:

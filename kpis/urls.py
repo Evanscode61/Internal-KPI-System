@@ -3,7 +3,7 @@ from .views import create_kpi_definition_view, get_all_kpis_definition_view, del
   update_kpi_definition_view, get_kpi_definition_view, create_kpi_assignment_view, update_kpi_assignment_view, \
   get_kpi_assignments_view, create_kpi_formula_view, update_kpi_formula_view, delete_kpi_formula_view, \
   get_kpi_formula_view, submit_kpi_result_view, get_kpi_result_view, get_all_kpi_results_view, update_kpi_result_view, \
-  export_kpi_results_csv_view, delete_kpi_assignment_view, approve_reject_kpi_result_view
+  export_kpi_results_csv_view, delete_kpi_assignment_view, approve_reject_kpi_result_view, delete_kpi_result_view
 
 urlpatterns = [
   #-----------------------------------------------------------------------------------------
@@ -32,7 +32,8 @@ urlpatterns = [
   path('kpi_results/submit/',submit_kpi_result_view, name='submit_kpi_result'),
   path('kpi_results/get_one/<str:result_uuid>/', get_kpi_result_view, name='get_kpi_result'),
   path('kpi_results/get_all/', get_all_kpi_results_view, name='get_all_kpi_results'),
-path('kpi_results/review/<str:result_uuid>/', approve_reject_kpi_result_view, name='review_kpi_result'),
+  path('kpi_results/delete/<str:result_uuid>/', delete_kpi_result_view, name='delete_kpi_result'),
+  path('kpi_results/review/<str:result_uuid>/', approve_reject_kpi_result_view, name='review_kpi_result'),
   path('kpi_results/update/<str:result_uuid>/', update_kpi_result_view, name='update_kpi_results'),
   path('kpi_results/export_csv/', export_kpi_results_csv_view, name='export_kpi_results_csv'),
 

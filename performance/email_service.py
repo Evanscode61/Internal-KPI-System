@@ -200,3 +200,79 @@ class EmailNotificationService:
             )
         except Exception as e:
             print(f'[Email ERROR] Could not send summary to HR: {e}')
+
+    # APPROVAL /REJECTION EMAILS
+
+    @staticmethod
+    def send_result_approved_email(employee, kpi_name, score, rating):
+        """Notify employee that their KPI result has been approved."""
+        subject = f'KPI Result Approved — {kpi_name}'
+        message = (
+            f'Dear {employee.username},\n\n'
+            f'Your KPI result has been reviewed and approved by your manager.\n\n'
+            f'KPI    : {kpi_name}\n'
+            f'Score  : {score}%\n'
+            f'Rating : {rating.replace("_", " ").title()}\n\n'
+            f'Please log in to the KPI system to view your result.\n\n'
+            f'This is an automated message from the Internal KPI System.'
+        )
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[employee.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f'[Email ERROR] Could not send approval email to {employee.email}: {e}')
+
+    @staticmethod
+    def send_result_rejected_email(employee, kpi_name, manager_comment):
+        """Notify employee that their KPI result has been rejected."""
+        subject = f'KPI Result Rejected — {kpi_name}'
+        message = (
+            f'Dear {employee.username},\n\n'
+            f'Your KPI result has been reviewed and rejected by your manager.\n\n'
+            f'KPI    : {kpi_name}\n'
+            f'{("Manager Comment : " + manager_comment + chr(10)) if manager_comment else ""}\n'
+            f'Please log in to the KPI system, correct your submission and resubmit.\n\n'
+            f'This is an automated message from the Internal KPI System.'
+        )
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[employee.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f'[Email ERROR] Could not send rejection email to {employee.email}: {e}')
+
+    #  NEW ASSIGNMENT EMAIL
+
+    @staticmethod
+    def send_new_assignment_email(employee, kpi_name, period_start, period_end):
+        """Notify employee that a new KPI has been assigned to them."""
+        subject = f'New KPI Assigned — {kpi_name}'
+        message = (
+            f'Dear {employee.username},\n\n'
+            f'A new KPI has been assigned to you.\n\n'
+            f'KPI          : {kpi_name}\n'
+            f'Period Start : {period_start}\n'
+            f'Period End   : {period_end or "—"}\n\n'
+            f'Please log in to the KPI system to view your assignment and submit your result.\n\n'
+            f'This is an automated message from the Internal KPI System.'
+        )
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[employee.email],
+                fail_silently=False,
+            )
+        except Exception as e:
+            print(f'[Email ERROR] Could not send assignment email to {employee.email}: {e}')
+

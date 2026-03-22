@@ -364,19 +364,56 @@ class KPIAssignmentService(ServiceBase):
     def create_kpi_assignment(self, kpi_uuid, period_start, period_end=None, assigned_to_uuid=None,
                               assigned_team_uuid=None, assigned_department_uuid=None,
                               status=None, triggered_by: User = None, request=None):
-        kpi = KPIService().get_by_uuid(kpi_uuid)
 
+        from datetime import date
+        from Base.models import Status
+
+        kpi = KPIService().get_by_uuid(kpi_uuid)
         assigned_to = User.objects.get(uuid=assigned_to_uuid) if assigned_to_uuid else None
         assigned_team = TeamService().get_by_uuid(assigned_team_uuid) if assigned_team_uuid else None
         assigned_department = DepartmentService().get_by_uuid(
             assigned_department_uuid) if assigned_department_uuid else None
 
-        # Resolve status string to Status FK object
+        # ── Resolve status FK
         status_obj = None
         if status:
-            from Base.models import Status
             status_obj = Status.objects.filter(name__iexact=status).first()
 
+        # ── Validation — period_end must be after period_start
+        if period_end and period_start:
+            start = period_start if isinstance(period_start, date) else date.fromisoformat(str(period_start))
+            end = period_end if isinstance(period_end, date) else date.fromisoformat(str(period_end))
+            if end <= start:
+                raise ValueError('Period end must be after period start.')
+
+        # ── Validation — duplicate assignment check
+        if assigned_to and self.manager.filter(
+                kpi=kpi, assigned_to=assigned_to,
+                period_start=period_start, period_end=period_end
+        ).exists():
+            raise ValueError(f'This KPI is already assigned to {assigned_to.username} for this period.')
+
+        if assigned_team and self.manager.filter(
+                kpi=kpi, assigned_team=assigned_team,
+                period_start=period_start, period_end=period_end
+        ).exists():
+            raise ValueError(f'This KPI is already assigned to {assigned_team.team_name} team for this period.')
+
+        if assigned_department and self.manager.filter(
+                kpi=kpi, assigned_department=assigned_department,
+                period_start=period_start, period_end=period_end
+        ).exists():
+            raise ValueError(f'This KPI is already assigned to {assigned_department.name} department for this period.')
+
+        # ── Validation — KPI must have an active formula before assignment
+        from kpis.models import KPIFormula
+        if not KPIFormula.objects.filter(kpi=kpi, status__code='ACT').exists():
+            raise ValueError(
+                f'KPI "{kpi.kpi_name}" has no active formula. '
+                'Please create a formula before assigning this KPI.'
+            )
+
+        # ── Create assignment
         assignment = self.manager.create(
             kpi=kpi,
             assigned_to=assigned_to,
@@ -386,6 +423,8 @@ class KPIAssignmentService(ServiceBase):
             period_end=period_end,
             status=status_obj,
         )
+
+        # ── Log transaction
         try:
             TransactionLogService.log(
                 event_code='kpi_assignment',
@@ -405,11 +444,15 @@ class KPIAssignmentService(ServiceBase):
                 }
             )
         except Exception as e:
-            print(f"[TransactionLog ERROR] {e}")
-        # ── Notify employee when KPI is assigned
+            print(f'[TransactionLog ERROR] {e}')
+
+        # Notify recipients  in-app and email
         try:
             from performance.models import Notification
+            from performance.email_service import EmailNotificationService
+
             if assigned_to:
+                # Individual assignment — notify the employee
                 Notification.objects.create(
                     recipient=assigned_to,
                     notification_type='kpi_alert',
@@ -420,8 +463,15 @@ class KPIAssignmentService(ServiceBase):
                     ),
                     is_read=False,
                 )
+                EmailNotificationService.send_new_assignment_email(
+                    employee=assigned_to,
+                    kpi_name=kpi.kpi_name,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+
             elif assigned_team:
-                # Notify all team members
+                # Team assignment — notify all team members
                 team_members = User.objects.filter(team=assigned_team)
                 for member in team_members:
                     Notification.objects.create(
@@ -434,8 +484,15 @@ class KPIAssignmentService(ServiceBase):
                         ),
                         is_read=False,
                     )
+                    EmailNotificationService.send_new_assignment_email(
+                        employee=member,
+                        kpi_name=kpi.kpi_name,
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+
             elif assigned_department:
-                # Notify all department members
+                # Department assignment — notify all department members
                 dept_members = User.objects.filter(department=assigned_department)
                 for member in dept_members:
                     Notification.objects.create(
@@ -448,6 +505,13 @@ class KPIAssignmentService(ServiceBase):
                         ),
                         is_read=False,
                     )
+                    EmailNotificationService.send_new_assignment_email(
+                        employee=member,
+                        kpi_name=kpi.kpi_name,
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+
         except Exception as e:
             print(f'[Notification ERROR] {e}')
 
@@ -771,7 +835,7 @@ class KPIResultAccountService(ServiceBase):
                 else:
                     raise ValueError(
                         'You have already submitted a result for this KPI. '
-                        'Use the update endpoint to change your submission.'
+                        'you can only update the result to change your submission if not approved.'
                     )
 
             #  Validate the submitter belongs to the assignment target
@@ -795,7 +859,22 @@ class KPIResultAccountService(ServiceBase):
 
             else:
                 raise ValueError('KPI assignment has no valid target')
-            # ─────────────────────────────────────────────────────────────────────
+            #  actual value must be positive
+            try:
+                actual_float = float(actual_value)
+            except (ValueError, TypeError):
+                raise ValueError('Actual value must be a valid number.')
+
+            if actual_float < 0:
+                raise ValueError('Actual value cannot be negative.')
+
+            #  KPI must have a target before submission
+            kpi = assignment.kpi
+            if not kpi.max_threshold:
+                raise ValueError(
+                    f'KPI "{kpi.kpi_name}" has no target value set. '
+                    'Please ask your manager to set the target (max threshold) before submitting.'
+                )
 
             kpi = assignment.kpi
             formula = self._get_active_formula(kpi)
@@ -950,17 +1029,20 @@ class KPIFormulaService(ServiceBase):
         from simpleeval import simple_eval
         import re
 
-        # Only allow these variable names
+        # Allowed variable names
         allowed_vars = {'actual', 'target', 'weight', 'min_threshold', 'max_threshold'}
-        allowed_functions = {'abs', 'round', 'int', 'float'}
 
+        # Allowed functions and keywords to ignore during variable check
+        allowed_functions = {'abs', 'round', 'int', 'float', 'min', 'max', 'if', 'else'}
 
         # Extract all word tokens from expression
         used_vars = set(re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expression))
-        invalid_vars = used_vars - allowed_vars
-        if invalid_vars:
+
+        # ── Remove allowed functions and keywords before checking
+        unknown = used_vars - allowed_vars - allowed_functions
+        if unknown:
             raise ValueError(
-                f"Formula contains invalid variables: {', '.join(invalid_vars)}. "
+                f"Formula contains invalid variables: {', '.join(unknown)}. "
                 f"Allowed variables are: actual, target, weight, min_threshold, max_threshold"
             )
 
@@ -974,7 +1056,11 @@ class KPIFormulaService(ServiceBase):
         }
 
         try:
-            result = simple_eval(expression, names=test_context,functions ={'min':min, 'max':max,'abs':abs})
+            result = simple_eval(
+                expression,
+                names=test_context,
+                functions={'min': min, 'max': max, 'abs': abs}
+            )
         except ZeroDivisionError:
             raise ValueError(
                 'Formula causes division by zero with test values. '
@@ -1555,9 +1641,8 @@ class PerformanceSummaryAccountService(ServiceBase):
 
         results = KPIResults.objects.filter(
             submitted_by=user,
-            kpi_assignment__assigned_to=user,
-            created_at__gte=period_start,
-            created_at__lte=period_end,
+            created_at__date__gte=period_start,
+            created_at__date__lte=period_end,
             calculated_score__isnull=False,
             approval_status='approved',
         ).select_related('kpi_assignment__kpi')
@@ -1604,8 +1689,8 @@ class PerformanceSummaryAccountService(ServiceBase):
 
         results = KPIResults.objects.filter(
             kpi_assignment__assigned_team=team,
-            created_at__gte=period_start,
-            created_at__lte=period_end,
+            created_at__date__gte=period_start,
+            created_at__date__lte=period_end,
             calculated_score__isnull=False,
             approval_status='approved',
         ).select_related('kpi_assignment__kpi')
@@ -1651,8 +1736,8 @@ class PerformanceSummaryAccountService(ServiceBase):
 
         results = KPIResults.objects.filter(
             kpi_assignment__assigned_department=department,
-            created_at__gte=period_start,
-            created_at__lte=period_end,
+            created_at__date__gte=period_start,
+            created_at__date__lte=period_end,
             calculated_score__isnull=False,
             approval_status='approved',
         ).select_related('kpi_assignment__kpi')
@@ -1763,7 +1848,7 @@ class PerformanceSummaryAccountService(ServiceBase):
         # ── notify line managers ───────────────────────────────────────────
         managers = User.objects.filter(
             department     = team.department,
-            role__name__in = ['Business_Line_Manager', 'Tech_Line_Manager']
+            role__is_manager = True,
         )
         for manager in managers:
             try:
@@ -1805,7 +1890,7 @@ class PerformanceSummaryAccountService(ServiceBase):
 
         managers = User.objects.filter(
             department     = department,
-            role__name__in = ['Business_Line_Manager', 'Tech_Line_Manager']
+            role__is_manager= True,
         )
 
         # ── notify line managers ───────────────────────────────────────────
@@ -1859,7 +1944,7 @@ class PerformanceSummaryAccountService(ServiceBase):
                 is_read = False,
             )
 
-    # ── LOGGING ───────────────────────────────────────────────────────────────
+    # ── LOGGING
 
     def _log(self, summary, triggered_by, request):
         """Log every summary generation to the transaction log."""

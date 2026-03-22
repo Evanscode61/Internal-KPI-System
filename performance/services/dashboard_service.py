@@ -21,7 +21,6 @@ from performance.models import KPIAlert, PerformanceSummary
 User = get_user_model()
 
 HR_ADMIN_ROLES   = {'hr', 'admin'}
-MANAGER_ROLES    = {'business_line_manager', 'tech_line_manager'}
 RATING_ORDER     = ['outstanding', 'good', 'satisfactory', 'needs_improvement', 'poor']
 
 
@@ -40,10 +39,10 @@ class DashboardService:
         if role in HR_ADMIN_ROLES:
             return cls._company_dashboard(period_start, period_end)
 
-        elif role in MANAGER_ROLES:
-            return cls._department_dashboard(
-                request.user, period_start, period_end
-            )
+
+        elif request.user.role and request.user.role.is_manager and request.user.department:
+
+            return cls._department_dashboard(request.user, period_start, period_end)
 
         elif role == 'employee':
             return cls._employee_dashboard(request.user, period_start, period_end)
@@ -173,7 +172,7 @@ class DashboardService:
             'unread_notifications':   unread_notifications,
         }
 
-    # ── BUILDING BLOCKS ───────────────────────────────────────────────────────
+    #  BUILDING BLOCKS
 
     @staticmethod
     def _build_overview(results_qs, assignments_qs):
@@ -188,19 +187,19 @@ class DashboardService:
                           )['avg']
 
         return {
-            'total_kpis_assigned':  total_assigned,
+            'total_kpis_assigned':     total_assigned,
             'total_results_submitted': total_submitted,
-            'submission_rate':      DashboardService._submission_rate(
-                                        total_submitted, total_assigned
-                                    ),
-            'average_score':        round(float(avg_score), 2) if avg_score else 0,
-            'rating_breakdown':     DashboardService._build_rating_breakdown(results_qs),
+            'submission_rate':         DashboardService._submission_rate(
+                                           total_submitted, total_assigned
+                                       ),
+            'average_score':           round(float(avg_score), 2) if avg_score else 0,
+            'rating_breakdown':        DashboardService._build_rating_breakdown(results_qs),
         }
 
     @staticmethod
     def _build_rating_breakdown(results_qs):
         """Count of results per rating label."""
-        counts = results_qs.values('rating').annotate(count=Count('rating'))
+        counts    = results_qs.values('rating').annotate(count=Count('rating'))
         breakdown = {r: 0 for r in RATING_ORDER}
         for row in counts:
             if row['rating'] in breakdown:
@@ -210,41 +209,54 @@ class DashboardService:
     @classmethod
     def _build_department_breakdown(cls, departments, period_start, period_end):
         """
-        Per-department summary: name, weighted score from PerformanceSummary,
-        rating derived from score, and nested team breakdown.
+        Per-department score calculated live from approved results.
+        Covers three result sources:
+          1. Individual assignments to employees in this department
+          2. Team assignments to teams in this department
+          3. Direct department assignments
+        This matches how professional HCM systems like SAP and Oracle work —
+        dashboard always shows live data, not waiting for summaries.
         """
         result = []
         for dept in departments:
-            dept_summary = PerformanceSummary.objects.filter(
-                department   = dept,
-                summary_type = 'department',
-            ).order_by('-period_end').first()
+            # Collect all approved results belonging to this department
+            dept_results = cls._filter_results(period_start, period_end).filter(
+                Q(submitted_by__department=dept) |
+                Q(kpi_assignment__assigned_team__department=dept) |
+                Q(kpi_assignment__assigned_department=dept)
+            ).distinct()
 
-            teams       = Team.objects.filter(department=dept)
-            team_data   = cls._build_team_breakdown(teams, period_start, period_end)
-            score       = float(dept_summary.weighted_score) if dept_summary else None
+            score     = cls._average_score(dept_results)
+            teams     = Team.objects.filter(department=dept)
+            team_data = cls._build_team_breakdown(teams, period_start, period_end)
 
             result.append({
-                'department_uuid':  str(dept.uuid),
-                'name':             dept.name,
-                'weighted_score':   score,
-                'rating':           cls._score_to_rating(score),
-                'teams':            team_data,
+                'department_uuid': str(dept.uuid),
+                'name':            dept.name,
+                'weighted_score':  score,
+                'rating':          cls._score_to_rating(score),
+                'teams':           team_data,
             })
 
         return sorted(result, key=lambda d: d['weighted_score'] or 0, reverse=True)
 
     @classmethod
     def _build_team_breakdown(cls, teams, period_start, period_end):
-        """Per-team summary: name, weighted score, rating."""
+        """
+        Per-team score calculated live from approved results.
+        Covers two result sources:
+          1. Individual assignments to employees in this team
+          2. Direct team assignments to this team
+        """
         result = []
         for team in teams:
-            team_summary = PerformanceSummary.objects.filter(
-                team         = team,
-                summary_type = 'team',
-            ).order_by('-period_end').first()
+            # Collect all approved results belonging to this team
+            team_results = cls._filter_results(period_start, period_end).filter(
+                Q(submitted_by__team=team) |
+                Q(kpi_assignment__assigned_team=team)
+            ).distinct()
 
-            score = float(team_summary.weighted_score) if team_summary else None
+            score = cls._average_score(team_results)
 
             result.append({
                 'team_uuid':      str(team.uuid),
@@ -256,15 +268,34 @@ class DashboardService:
         return sorted(result, key=lambda t: t['weighted_score'] or 0, reverse=True)
 
     @staticmethod
+    def _average_score(results_qs):
+        """
+        Calculate weighted average score from a queryset of results.
+        Each result score is multiplied by its KPI weight so higher
+        weight KPIs contribute more to the final score.
+        """
+        qs = results_qs.select_related('kpi_assignment__kpi')
+        if not qs.exists():
+            return None
+        total_weighted = sum(
+            float(r.calculated_score) * float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in qs
+        )
+        total_weights = sum(
+            float(r.kpi_assignment.kpi.weight_value or 1)
+            for r in qs
+        )
+        return round(total_weighted / total_weights, 1) if total_weights else None
+
+    @staticmethod
     def _build_alerts_summary(alerts_qs):
         """Count of active and resolved alerts, broken down by type."""
-        total_active        = alerts_qs.filter(is_resolved=False).count()
-        underperformance    = alerts_qs.filter(
-                                  is_resolved=False,
-                                  alert_type='underperformance'
-                              ).count()
+        total_active     = alerts_qs.filter(is_resolved=False).count()
+        underperformance = alerts_qs.filter(
+                               is_resolved=False,
+                               alert_type='underperformance'
+                           ).count()
 
-        # Departments with at least one active underperformance alert
         dept_uuids = alerts_qs.filter(
             is_resolved=False,
             alert_type='underperformance',
@@ -274,8 +305,8 @@ class DashboardService:
         ).distinct()
 
         return {
-            'total_active_alerts':              total_active,
-            'underperformance_alerts':          underperformance,
+            'total_active_alerts':               total_active,
+            'underperformance_alerts':           underperformance,
             'departments_with_underperformance': list(dept_uuids),
         }
 
@@ -299,13 +330,13 @@ class DashboardService:
 
         return [
             {
-                'user_uuid':   str(row['submitted_by__uuid']),
-                'username':    row['submitted_by__username'],
-                'department':  row['submitted_by__department__name'],
-                'avg_score':   round(float(row['avg_score']), 2),
-                'rating':      DashboardService._score_to_rating(
-                                   float(row['avg_score'])
-                               ),
+                'user_uuid':  str(row['submitted_by__uuid']),
+                'username':   row['submitted_by__username'],
+                'department': row['submitted_by__department__name'],
+                'avg_score':  round(float(row['avg_score']), 2),
+                'rating':     DashboardService._score_to_rating(
+                                  float(row['avg_score'])
+                              ),
             }
             for row in top
         ]
@@ -380,9 +411,9 @@ class DashboardService:
     def _filter_assignments(period_start, period_end):
         qs = KpiAssignment.objects.all()
         if period_start:
-            qs = qs.filter(period_end__gte=period_start)  # ← was period_start__gte
+            qs = qs.filter(period_end__gte=period_start)
         if period_end:
-            qs = qs.filter(period_start__lte=period_end)  # ← was period_end__lte
+            qs = qs.filter(period_start__lte=period_end)
         return qs
 
     @staticmethod

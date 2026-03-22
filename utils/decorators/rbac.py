@@ -49,9 +49,9 @@ def require_roles(*allowed_roles):
             #  inject role flags into request
             user_role = request.user.role.name.lower()
 
-            request.is_line_manager = user_role in (
-                'business_line_manager',
-                'tech_line_manager'
+            request.is_line_manager = bool(
+                request.user.role and
+                request.user.role.is_manager
             )
             request.is_employee    = user_role == 'employee'
             request.is_admin_or_hr = user_role in ('admin', 'hr')

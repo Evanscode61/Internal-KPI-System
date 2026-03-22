@@ -22,10 +22,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-r+=l!0y7&(i_(6^4o*n4(%wqdom6w8d!+hspm49888431cuw0z'
 
-# SECURITY WARNING: don't run with debug turned on in production!
+# Debug = False only for development.
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['localhost','127.0.0.1']
 
 
 # Application definition
@@ -137,17 +137,17 @@ if DEBUG:
     EMAIL_BACKEND      = 'django.core.mail.backends.console.EmailBackend'
     DEFAULT_FROM_EMAIL = 'noreply@kpisystem.com'
 else:
-    # Production sends real emails via Gmail SMTP
+    # sends real emails via Gmail SMTP
     EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
     EMAIL_HOST          = 'smtp.gmail.com'
     EMAIL_PORT          = 587
     EMAIL_USE_TLS       = True
-    EMAIL_HOST_USER     = 'your_actual_email@gmail.com'      # actual email
-    EMAIL_HOST_PASSWORD = 'your_gmail_app_password'          # password of actual email
+    EMAIL_HOST_USER     = 'evanskibet65@gmail.com'      # actual email
+    EMAIL_HOST_PASSWORD = 'mlexfbgvrucavpxo'          # password of actual email
     DEFAULT_FROM_EMAIL  = EMAIL_HOST_USER
 
 # HR receives a notification every time a performance summary is generated
-HR_NOTIFICATION_EMAIL = 'hr@yourcompany.com'                 # email of the hr
+HR_NOTIFICATION_EMAIL = 'evanskibet65@gmail.com'                 # email of the hr
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",

@@ -355,7 +355,7 @@ class KPIFormulaServiceHandler:
             message=f"Formula {formula.formula_name} deleted successfully",
         )
 
-class KPIResultService:
+class  KPIResultService:
 
     @classmethod
     def submit_result(cls, request) -> ResponseProvider:
@@ -427,6 +427,49 @@ class KPIResultService:
         )
 
     @classmethod
+    def delete_result(cls, request, result_uuid: str) -> ResponseProvider:
+        result = KPIResultAccountService().get_by_uuid(result_uuid)
+        role = request.user.role.name if request.user.role else ''
+
+        if role == 'admin':
+            pass
+        elif role in ('Business_Line_Manager', 'Tech_Line_Manager'):
+            if result.approval_status == 'approved':
+                return ResponseProvider.forbidden(message='Approved results cannot be deleted')
+            assignment = result.kpi_assignment
+            manager_dept = request.user.department
+            result_dept = (
+                assignment.assigned_to.department if assignment.assigned_to else
+                assignment.assigned_department if assignment.assigned_department else
+                assignment.assigned_team.department if assignment.assigned_team else None
+            )
+            if result_dept != manager_dept:
+                return ResponseProvider.forbidden(message='You can only delete results within your department')
+        elif role.lower() == 'employee':
+            if result.submitted_by != request.user:
+                return ResponseProvider.forbidden(message='You can only delete your own results')
+            if result.approval_status == 'approved':
+                return ResponseProvider.forbidden(message='You cannot delete an approved result')
+        else:
+            return ResponseProvider.forbidden(message='You do not have permission to delete results')
+
+        from Base.models import Status
+        from django.utils import timezone
+        active_status = Status.objects.filter(code='ACT').first()
+        if active_status:
+            result.kpi_assignment.status = active_status
+            result.kpi_assignment.save(update_fields=['status'])
+
+        result.is_deleted = True
+        result.deleted_at = timezone.now()
+        result.deleted_by = request.user
+        result.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
+
+        return ResponseProvider.success(
+            message=f'Result for "{result.kpi_assignment.kpi.kpi_name}" deleted successfully'
+        )
+
+    @classmethod
     def approve_reject_result(cls, request, result_uuid: str) -> ResponseProvider:
         data = get_clean_request_data(
             request,
@@ -440,85 +483,89 @@ class KPIResultService:
                 message="approval_status must be 'approved' or 'rejected'"
             )
 
+        # Fetch result with all related data in one query
         result = KPIResultAccountService().get_by_uuid(result_uuid)
-        # Managers can only review results within their own department
+        assignment = result.kpi_assignment
+        kpi = assignment.kpi
+        manager_comment = data.get('manager_comment', '')
+
+        # Department scope check for managers
         role = request.user.role.name if request.user.role else ''
         if role in ('Business_Line_Manager', 'Tech_Line_Manager'):
-            assignment = result.kpi_assignment
             manager_dept = request.user.department
-
-            # Check all three possible assignment targets
             result_dept = (
-                assignment.assigned_to.department if assignment.assigned_to else None
-                                                                                 or assignment.assigned_department if assignment.assigned_department else None
-                                                                                                                                                          or assignment.assigned_team.department if assignment.assigned_team else None
+                assignment.assigned_to.department if assignment.assigned_to else
+                assignment.assigned_department if assignment.assigned_department else
+                assignment.assigned_team.department if assignment.assigned_team else None
             )
-
             if result_dept != manager_dept:
                 return ResponseProvider.forbidden(
-                    message="You can only review results within your department"
+                    message='You can only review results within your department'
                 )
 
-        result.approval_status = approval_status
-        result.manager_comment = data.get('manager_comment', '')
-        result.reviewed_by     = request.user
-        result.save(update_fields=['approval_status', 'manager_comment', 'reviewed_by'])
+        # Save result and wrap all writes in atomic transaction
+        from django.db import transaction
+        from Base.models import Status
+        from performance.models import Notification
+        from performance.email_service import EmailNotificationService
 
-        # ── Notify employee of approval or rejection
-        try:
-            from performance.models import Notification
-            employee = result.submitted_by or result.kpi_assignment.assigned_to
+        with transaction.atomic():
+            result.approval_status = approval_status
+            result.manager_comment = manager_comment
+            result.reviewed_by = request.user
+            result.save(update_fields=['approval_status', 'manager_comment', 'reviewed_by'])
+
+            #  Revert assignment to Active if rejected
+            if approval_status == 'rejected':
+                active_status = Status.objects.filter(code='ACT').first()
+                if active_status:
+                    assignment.status = active_status
+                    assignment.save(update_fields=['status'])
+
+            # Build notification message
+            employee = result.submitted_by or assignment.assigned_to
             if employee:
-                kpi_name = result.kpi_assignment.kpi.kpi_name
-                comment = data.get('manager_comment', '')
                 if approval_status == 'approved':
                     message = (
-                        f'Your result for "{kpi_name}" has been approved. '
+                        f'Your result for "{kpi.kpi_name}" has been approved. '
                         f'Score: {result.calculated_score}% — Rated {result.rating}.'
                     )
                 else:
                     message = (
-                        f'Your result for "{kpi_name}" has been rejected by your manager. '
-                        f'{("Reason: " + comment + ".") if comment else ""} '
+                        f'Your result for "{kpi.kpi_name}" has been rejected by your manager. '
+                        f'{("Reason: " + manager_comment + ".") if manager_comment else ""} '
                         f'Please resubmit with the correct value.'
                     )
+
+                # In-app notification
                 Notification.objects.create(
                     recipient=employee,
                     notification_type='kpi_alert',
                     message=message,
                     is_read=False,
                 )
-        except Exception as e:
-            print(f'[Notification ERROR] {e}')
 
-        # If rejected set assignment back to Active so employee can resubmit
-        from Base.models import Status
-        if approval_status == 'rejected':
-            active_status = Status.objects.filter(code='ACT').first()
-            if active_status:
-                result.kpi_assignment.status = active_status
-                result.kpi_assignment.save(update_fields=['status'])
-
+        # Send email outside transaction , email failure should not rollback DB
         try:
-            TransactionLogService.log(
-                event_code='kpi_result_reviewed',
-                triggered_by=request.user,
-                entity=result,
-                status_code='ACT',
-                message=f'Result {approval_status} for KPI "{result.kpi_assignment.kpi.kpi_name}"',
-                ip_address=request.META.get('REMOTE_ADDR') if request else None,
-                metadata={
-                    'result_id':       str(result.uuid),
-                    'approval_status': approval_status,
-                    'reviewed_by':     request.user.username,
-                    'manager_comment': data.get('manager_comment', ''),
-                }
-            )
+            if employee:
+                if approval_status == 'approved':
+                    EmailNotificationService.send_result_approved_email(
+                        employee=employee,
+                        kpi_name=kpi.kpi_name,
+                        score=result.calculated_score,
+                        rating=result.rating,
+                    )
+                else:
+                    EmailNotificationService.send_result_rejected_email(
+                        employee=employee,
+                        kpi_name=kpi.kpi_name,
+                        manager_comment=manager_comment,
+                    )
         except Exception as e:
-            print(f"[TransactionLog ERROR] {e}")
+            print(f'[Email ERROR] {e}')
 
         return ResponseProvider.success(
-            message=f"Result {approval_status} successfully",
+            message=f'Result {approval_status} successfully',
             data=cls._serialize(result)
         )
 

@@ -132,6 +132,14 @@ class KPIResults(BaseModel):
         on_delete=models.SET_NULL,
         related_name='reviewed_kpi_results'
     )
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='deleted_results'
+    )
 
     class Meta:
         db_table = 'kpisResults'

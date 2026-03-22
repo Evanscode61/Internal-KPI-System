@@ -11,7 +11,6 @@ class User(AbstractUser, BaseModel):
     team         = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True)
     phone_number = models.CharField(max_length=11, blank=True)
     status       = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True, blank=True)
-    is_active    = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'users'
@@ -55,6 +54,7 @@ class Role(BaseModel):
     name        = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     is_active   = models.BooleanField(default=True)
+    is_manager = models.BooleanField(default=False)
     permissions = models.ManyToManyField(
         Permission,
         blank=True,
@@ -80,7 +80,7 @@ class RefreshToken(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
-# ─── OTP Model ───────────────────────────────────────────────────────────────
+#  OTP Model
 
 class OTP(models.Model):
     """
