@@ -57,7 +57,7 @@ def get_all_kpis_definition_view(request) -> ResponseProvider:
         return ResponseProvider.handle_exception(ex)
 # Create your views here.
 #________________________________________________________________________________
-#
+# KPI ASSIGNMENT VIEWS
 #---------------------------------------------------------------------------------
 @csrf_exempt
 @allowed_http_methods(['POST'])
@@ -77,7 +77,7 @@ def update_kpi_assignment_view(request, assignment_uuid:str) -> ResponseProvider
     except Exception as ex:
         return ResponseProvider.handle_exception(ex)
 @csrf_exempt
-@require_roles('admin', 'hr',)
+@require_roles('hr','admin','Business_Line_Manager','Tech_Line_Manager')
 def delete_kpi_assignment_view( request, assignment_uuid):
     try:
         return KPIAssignmentHandler.delete_kpi_assignment(request, assignment_uuid)

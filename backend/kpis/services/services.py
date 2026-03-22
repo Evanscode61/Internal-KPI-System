@@ -192,22 +192,27 @@ class KPIAssignmentHandler:
         )
 
     @classmethod
-    def delete_kpi_assignment(cls, request, assignment_uuid: str) -> ResponseProvider:
-        assignment = KPIAssignmentService().delete_assignment(
+    def delete_kpi_assignment(cls, request, assignment_uuid):
+        assignment = KPIAssignmentService().get_by_uuid(assignment_uuid)
+
+        # ── Managers can only delete assignments in their department
+        if getattr(request.user.role, 'is_manager', False):
+            assignment_dept = (
+                assignment.assigned_to.department if assignment.assigned_to else
+                assignment.assigned_department if assignment.assigned_department else
+                assignment.assigned_team.department if assignment.assigned_team else None
+            )
+            if assignment_dept != request.user.department:
+                return ResponseProvider.forbidden(
+                    message='You can only delete assignments within your department'
+                )
+
+        KPIAssignmentService().delete_assignment(
             assignment_uuid,
             triggered_by=request.user,
             request=request
         )
-        # Line managers can only delete assignments within their own department
-        if getattr(request, 'is_line_manager', False) and request.department_scope:
-            if assignment.assigned_department != request.department_scope:
-                return ResponseProvider.forbidden(
-                    message="You can only delete assignments within your own department"
-                )
-        kpi_name = assignment.kpi.kpi_name if assignment.kpi else assignment_uuid
-        return ResponseProvider.success(
-            message=f"KPI assignment for '{kpi_name}' deleted successfully"
-        )
+        return ResponseProvider.success(message='Assignment deleted successfully')
 
     @classmethod
     def get_all_kpi_assignments(cls, request):
