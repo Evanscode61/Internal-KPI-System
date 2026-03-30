@@ -92,12 +92,10 @@ class DashboardService:
             }
 
         results_qs = cls._filter_results(period_start, period_end).filter(
-            kpi_assignment__assigned_department=department
-        ) | cls._filter_results(period_start, period_end).filter(
-            kpi_assignment__assigned_to__department=department
-        ) | cls._filter_results(period_start, period_end).filter(
-            kpi_assignment__assigned_team__department=department
-        )
+            Q(kpi_assignment__assigned_department=department) |
+            Q(kpi_assignment__assigned_to__department=department) |
+            Q(kpi_assignment__assigned_team__department=department)
+        ).distinct()
 
         assignments_qs = cls._filter_assignments(period_start, period_end).filter(
             Q(assigned_department=department) |
@@ -137,9 +135,20 @@ class DashboardService:
         results_qs = cls._filter_results(period_start, period_end).filter(
             submitted_by=user
         )
+        # For counting submissions — include pending and rejected, not just approved
+        submitted_qs = KPIResults.objects.filter(
+            submitted_by=user,
+            is_deleted=False,
+        )
+
+        assignment_filter = Q(assigned_to=user)
+        if user.team:
+            assignment_filter |= Q(assigned_team=user.team)
+        if user.department:
+            assignment_filter |= Q(assigned_department=user.department)
 
         assignments_qs = cls._filter_assignments(period_start, period_end).filter(
-            assigned_to=user
+            assignment_filter
         )
 
         summaries = PerformanceSummary.objects.filter(
@@ -156,10 +165,10 @@ class DashboardService:
             'team':                   user.team.team_name if user.team else None,
             'period':                 cls._period_label(period_start, period_end),
             'kpis_assigned':          assignments_qs.count(),
-            'kpis_submitted':         results_qs.count(),
-            'submission_rate':        cls._submission_rate(
-                                          results_qs.count(), assignments_qs.count()
-                                      ),
+            'kpis_submitted': submitted_qs.count(),
+            'submission_rate': cls._submission_rate(
+                submitted_qs.count(), assignments_qs.count()
+            ),
             'rating_breakdown':       cls._build_rating_breakdown(results_qs),
             'recent_results':         cls._build_recent_results(results_qs, limit=5),
             'performance_summaries':  [
@@ -207,65 +216,144 @@ class DashboardService:
         return breakdown
 
     @classmethod
+    def _build_team_breakdown(cls, teams, period_start, period_end):
+        """
+        Per-team score calculated live from approved results.
+        Score = average of each member's individual weighted score.
+        Each member contributes equally regardless of how many KPIs they had.
+        """
+        result = []
+        for team in teams:
+            # Collect all approved results submitted by members of this team
+            # submitted_by__team captures all assignment types — no double counting
+            team_results = cls._filter_results(period_start, period_end).filter(
+                submitted_by__team=team
+            ).select_related('submitted_by', 'kpi_assignment__kpi')
+
+            if not team_results.exists():
+                result.append({
+                    'team_uuid': str(team.uuid),
+                    'name': team.team_name,
+                    'weighted_score': None,
+                    'rating': None,
+                })
+                continue
+
+            # Step 1 — calculate each member's weighted score
+            member_scores = {}
+            for r in team_results:
+                member = r.submitted_by
+                if member not in member_scores:
+                    member_scores[member] = {'weighted': 0.0, 'weights': 0.0}
+                weight = float(r.kpi_assignment.kpi.weight_value or 1)
+                member_scores[member]['weighted'] += float(r.calculated_score) * weight
+                member_scores[member]['weights'] += weight
+
+            # Step 2 — team score = average of member scores
+            individual_scores = [
+                v['weighted'] / v['weights']
+                for v in member_scores.values()
+                if v['weights'] > 0
+            ]
+
+            score = round(
+                sum(individual_scores) / len(individual_scores), 1
+            ) if individual_scores else None
+
+            result.append({
+                'team_uuid': str(team.uuid),
+                'name': team.team_name,
+                'weighted_score': score,
+                'rating': cls._score_to_rating(score),
+            })
+
+        return sorted(result, key=lambda t: t['weighted_score'] or 0, reverse=True)
+
+    @classmethod
     def _build_department_breakdown(cls, departments, period_start, period_end):
         """
         Per-department score calculated live from approved results.
-        Covers three result sources:
-          1. Individual assignments to employees in this department
-          2. Team assignments to teams in this department
-          3. Direct department assignments
-        This matches how professional HCM systems like SAP and Oracle work —
-        dashboard always shows live data, not waiting for summaries.
+        Uses two-level aggregation:
+            Level 1 — each member's weighted score
+            Level 2 — each team's score = average of its member scores
+            Department score = average of team scores
+        Members without a team contribute directly alongside team scores.
         """
         result = []
         for dept in departments:
-            # Collect all approved results belonging to this department
+            # Collect all approved results submitted by members of this department
+            # submitted_by__department captures all assignment types — no double counting
             dept_results = cls._filter_results(period_start, period_end).filter(
-                Q(submitted_by__department=dept) |
-                Q(kpi_assignment__assigned_team__department=dept) |
-                Q(kpi_assignment__assigned_department=dept)
-            ).distinct()
+                submitted_by__department=dept
+            ).select_related('submitted_by', 'submitted_by__team', 'kpi_assignment__kpi')
 
-            score     = cls._average_score(dept_results)
-            teams     = Team.objects.filter(department=dept)
+            if not dept_results.exists():
+                teams = Team.objects.filter(department=dept)
+                team_data = cls._build_team_breakdown(teams, period_start, period_end)
+                result.append({
+                    'department_uuid': str(dept.uuid),
+                    'name': dept.name,
+                    'weighted_score': None,
+                    'rating': None,
+                    'teams': team_data,
+                })
+                continue
+
+            # calculate each member's weighted score
+            member_scores = {}
+            for r in dept_results:
+                member = r.submitted_by
+                if member not in member_scores:
+                    member_scores[member] = {
+                        'weighted': 0.0,
+                        'weights': 0.0,
+                        'team': member.team,
+                    }
+                weight = float(r.kpi_assignment.kpi.weight_value or 1)
+                member_scores[member]['weighted'] += float(r.calculated_score) * weight
+                member_scores[member]['weights'] += weight
+
+            #  group member scores by team
+            team_buckets = {}
+            ungrouped = []
+
+            for member, data in member_scores.items():
+                if data['weights'] == 0:
+                    continue
+                score = data['weighted'] / data['weights']
+                team = data['team']
+                if team:
+                    if team not in team_buckets:
+                        team_buckets[team] = []
+                    team_buckets[team].append(score)
+                else:
+                    ungrouped.append(score)
+
+            # each team score is the average of its member scores
+            team_scores = [
+                sum(scores) / len(scores)
+                for scores in team_buckets.values()
+                if scores
+            ]
+
+            # department score = average of team scores and the ungrouped members
+            all_scores = team_scores + ungrouped
+            dept_score = round(
+                sum(all_scores) / len(all_scores), 1
+            ) if all_scores else None
+
+            teams = Team.objects.filter(department=dept)
             team_data = cls._build_team_breakdown(teams, period_start, period_end)
 
             result.append({
                 'department_uuid': str(dept.uuid),
-                'name':            dept.name,
-                'weighted_score':  score,
-                'rating':          cls._score_to_rating(score),
-                'teams':           team_data,
+                'name': dept.name,
+                'weighted_score': dept_score,
+                'rating': cls._score_to_rating(dept_score),
+                'teams': team_data,
             })
 
         return sorted(result, key=lambda d: d['weighted_score'] or 0, reverse=True)
-
-    @classmethod
-    def _build_team_breakdown(cls, teams, period_start, period_end):
-        """
-        Per-team score calculated live from approved results.
-        Covers two result sources:
-          1. Individual assignments to employees in this team
-          2. Direct team assignments to this team
-        """
-        result = []
-        for team in teams:
-            # Collect all approved results belonging to this team
-            team_results = cls._filter_results(period_start, period_end).filter(
-                Q(submitted_by__team=team) |
-                Q(kpi_assignment__assigned_team=team)
-            ).distinct()
-
-            score = cls._average_score(team_results)
-
-            result.append({
-                'team_uuid':      str(team.uuid),
-                'name':           team.team_name,
-                'weighted_score': score,
-                'rating':         cls._score_to_rating(score),
-            })
-
-        return sorted(result, key=lambda t: t['weighted_score'] or 0, reverse=True)
 
     @staticmethod
     def _average_score(results_qs):
@@ -344,8 +432,8 @@ class DashboardService:
     @staticmethod
     def _build_needs_attention(results_qs, limit=5):
         """
-        Users with the lowest average calculated score
-        who have at least one poor or needs_improvement result.
+        Users with at least one poor or needs_improvement result.
+        Shows the worst performing KPI for each user.
         """
         bottom = (
             results_qs
@@ -362,18 +450,33 @@ class DashboardService:
             .order_by('avg_score')[:limit]
         )
 
-        return [
-            {
-                'user_uuid':  str(row['submitted_by__uuid']),
-                'username':   row['submitted_by__username'],
+        result = []
+        for row in bottom:
+            worst = (
+                results_qs
+                .filter(
+                    submitted_by__uuid=row['submitted_by__uuid'],
+                    rating__in=['poor', 'needs_improvement'],
+                )
+                .select_related('kpi_assignment__kpi')
+                .order_by('calculated_score')
+                .first()
+            )
+
+            result.append({
+                'user_uuid': str(row['submitted_by__uuid']),
+                'username': row['submitted_by__username'],
                 'department': row['submitted_by__department__name'],
-                'avg_score':  round(float(row['avg_score']), 2),
-                'rating':     DashboardService._score_to_rating(
-                                  float(row['avg_score'])
-                              ),
-            }
-            for row in bottom
-        ]
+                'avg_score': round(float(row['avg_score']), 2),
+                'rating': DashboardService._score_to_rating(
+                    float(row['avg_score'])
+                ),
+                'worst_kpi_name': worst.kpi_assignment.kpi.kpi_name if worst else None,
+                'worst_kpi_score': round(float(worst.calculated_score), 1) if worst else None,
+                'worst_kpi_rating': worst.rating if worst else None,
+            })
+
+        return result
 
     @staticmethod
     def _build_recent_results(results_qs, limit=5):
@@ -396,15 +499,16 @@ class DashboardService:
     @staticmethod
     def _filter_results(period_start, period_end):
         # Only count approved results that are not soft deleted
+        # Filter by assignment period not submission date
         qs = KPIResults.objects.filter(
             calculated_score__isnull=False,
             is_deleted=False,
             approval_status='approved'
         )
         if period_start:
-            qs = qs.filter(created_at__date__gte=period_start)
+            qs = qs.filter(kpi_assignment__period_end__gte=period_start)
         if period_end:
-            qs = qs.filter(created_at__date__lte=period_end)
+            qs = qs.filter(kpi_assignment__period_start__lte=period_end)
         return qs
 
     @staticmethod
@@ -420,7 +524,8 @@ class DashboardService:
     def _submission_rate(submitted, assigned):
         if not assigned:
             return '0%'
-        rate = round((submitted / assigned) * 100, 1)
+        # Cap at 100% — submission rate can never exceed 100%
+        rate = min(round((submitted / assigned) * 100, 1), 100.0)
         return f'{rate}%'
 
     @staticmethod

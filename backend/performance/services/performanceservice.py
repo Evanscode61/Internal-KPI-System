@@ -93,7 +93,7 @@ class PerformanceSummaryService:
             data    = cls._serialize(summary)
         )
 
-    # ── GET ONE ───────────────────────────────────────────────────────────────
+    #Get only one summary
 
     @classmethod
     def get_summary(cls, request, summary_uuid):
@@ -130,7 +130,7 @@ class PerformanceSummaryService:
 
         return ResponseProvider.success(data=cls._serialize(summary))
 
-    # ── GET ALL ───────────────────────────────────────────────────────────────
+    #Get all summary types
 
     @classmethod
     def get_all_summaries(cls, request):
@@ -159,7 +159,7 @@ class PerformanceSummaryService:
             data=[cls._serialize(s) for s in summaries]
         )
 
-    # ── EXPORT CSV ────────────────────────────────────────────────────────────
+    #  EXPORT CSV
 
     @classmethod
     def export_summaries_csv(cls, request):
@@ -197,7 +197,7 @@ class PerformanceSummaryService:
         summary.delete()
         return ResponseProvider.success(message='Summary deleted successfully')
 
-    # ── ROLE FILTER ───────────────────────────────────────────────────────────
+    #  ROLE FILTER
 
     @classmethod
     def _apply_role_filters(cls, request, filters):
@@ -214,7 +214,6 @@ class PerformanceSummaryService:
 
         elif role in ROLE_DEPARTMENT_MAP:
             # Line manager is locked to their own department.
-            # Use the actual department FK on the user — not a hardcoded name string.
             # This works regardless of what the department is called.
             if request.user.department:
                 filters['department_uuid'] = str(request.user.department.uuid)
@@ -231,7 +230,7 @@ class PerformanceSummaryService:
 
         return filters
 
-    # ── SERIALIZE ─────────────────────────────────────────────────────────────
+    # SERIALIZE
 
     @staticmethod
     def _serialize(summary):
@@ -246,7 +245,7 @@ class PerformanceSummaryService:
             'updated_at': str(summary.updated_at),
         }
 
-        # ── KPI breakdown — fetch approved results that make up this summary
+        # KPI breakdown, fetch approved results that make up this summary
         if summary.summary_type == 'individual' and summary.user:
             results = KPIResults.objects.filter(
                 submitted_by=summary.user,
@@ -290,7 +289,7 @@ class PerformanceSummaryService:
             for r in results
         ]
 
-        # ── Type specific fields
+        # Type specific fields
         if summary.summary_type == 'individual':
             base.update({
                 'user_uuid': str(summary.user.uuid) if summary.user else None,
