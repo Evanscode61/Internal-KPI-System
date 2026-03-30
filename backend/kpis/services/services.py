@@ -3,6 +3,7 @@ from utils.common import get_clean_request_data
 from services.services import KPIService, KPIAssignmentService, TransactionLogService, KPIFormulaService, \
     KPIResultAccountService
 from services.utils.response_provider import ResponseProvider
+from services.pagination import Paginator
 
 
 class KPIDefinitionHandler:
@@ -142,7 +143,7 @@ class KPIAssignmentHandler:
         """create a new KPI assignment"""
         data = get_clean_request_data(
             request,
-            required_fields={'kpi_uuid', 'period_start' }
+            required_fields={'kpi_uuid', 'period_start','period_end' }
         )
 
         kpi_uuid = data.get('kpi_uuid')
@@ -226,9 +227,13 @@ class KPIAssignmentHandler:
 
         role_name = request.user.role.name if request.user.role else ''
 
-        # Employees only see their own assignments
+        # Employees only see their own assignments from team and department.
         if role_name == 'employee':
-            filters['user_uuid'] = str(request.user.uuid)
+            filters['employee_scope'] = {
+                'user_uuid': str(request.user.uuid),
+                'team_uuid': str(request.user.team.uuid) if request.user.team else None,
+                'department_uuid': str(request.user.department.uuid) if request.user.department else None,
+            }
 
         # Line managers only see assignments in their department
         elif role_name in ('Business_Line_Manager', 'Tech_Line_Manager'):
@@ -405,14 +410,17 @@ class  KPIResultService:
         role = request.user.role.name if request.user.role else ''
 
         if role.lower() == 'employee':
-            filters['user_uuid'] = str(request.user.uuid)
+            filters['employee_scope'] = {
+                'user_uuid': str(request.user.uuid),
+                'team_uuid': str(request.user.team.uuid) if request.user.team else None,
+                'department_uuid': str(request.user.department.uuid) if request.user.department else None,
+            }
         elif role in ('Business_Line_Manager', 'Tech_Line_Manager'):
             if request.user.department:
                 filters['department_uuid'] = str(request.user.department.uuid)
-        # admin and hr — no filter, sees everything
-
+        # admin and hr have no filter, sees everything
         results = KPIResultAccountService().get_all_results(**filters)
-        return ResponseProvider.success(data=[cls._serialize(r) for r in results])
+        return Paginator.paginate(results, request, cls._serialize)
 
     @classmethod
     def update_result(cls, request, result_uuid: str) -> ResponseProvider:
@@ -550,24 +558,32 @@ class  KPIResultService:
                     is_read=False,
                 )
 
-        # Send email outside transaction , email failure should not rollback DB
-        try:
-            if employee:
+                # Send email outside transaction , email failure should not rollback DB
+                try:
+                    if employee:
+                        if approval_status == 'approved':
+                            EmailNotificationService.send_result_approved_email(
+                                employee=employee,
+                                kpi_name=kpi.kpi_name,
+                                score=result.calculated_score,
+                                rating=result.rating,
+                            )
+                        else:
+                            EmailNotificationService.send_result_rejected_email(
+                                employee=employee,
+                                kpi_name=kpi.kpi_name,
+                                manager_comment=manager_comment,
+                            )
+                except Exception as e:
+                    print(f'[Email ERROR] {e}')
+
+                # Trigger alert check only on approval — approved results represent
                 if approval_status == 'approved':
-                    EmailNotificationService.send_result_approved_email(
-                        employee=employee,
-                        kpi_name=kpi.kpi_name,
-                        score=result.calculated_score,
-                        rating=result.rating,
-                    )
-                else:
-                    EmailNotificationService.send_result_rejected_email(
-                        employee=employee,
-                        kpi_name=kpi.kpi_name,
-                        manager_comment=manager_comment,
-                    )
-        except Exception as e:
-            print(f'[Email ERROR] {e}')
+                    try:
+                        from performance.alert_service import AlertService
+                        AlertService.check_and_create_alert(result)
+                    except Exception as e:
+                        print(f'[AlertService ERROR] {e}')
 
         return ResponseProvider.success(
             message=f'Result {approval_status} successfully',
