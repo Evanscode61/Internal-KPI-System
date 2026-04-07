@@ -4,12 +4,16 @@ from services.services import KPIService, KPIAssignmentService, TransactionLogSe
     KPIResultAccountService
 from services.utils.response_provider import ResponseProvider
 from services.pagination import Paginator
+from django.utils import timezone
+from django.db import transaction
+from Base.models import Status
+from performance.models import Notification
+from performance.email_service import EmailNotificationService
 
 
 class KPIDefinitionHandler:
     """
         Handles KPI Definition operations.
-
         This handler acts as the business logic layer between
         views and services. It processes requests, validates input,
         calls the appropriate service methods, and formats responses.
@@ -18,7 +22,7 @@ class KPIDefinitionHandler:
     def create_kpi(cls, request):
         data = get_clean_request_data(
             request,
-            required_fields={'kpi_name','measurement_type','calculation_type','weight_value','kpi_description','department_uuid','min_threshold','max_threshold'},
+            required_fields={'kpi_name','measurement_type' ,'weight_value','kpi_description','department_uuid','min_threshold','max_threshold'},
         )
         service = KPIService()
         min_threshold = data.get('min_threshold')
@@ -33,7 +37,6 @@ class KPIDefinitionHandler:
         kpi = service.create_kpi(
             kpi_name=data['kpi_name'],
             measurement_type=data['measurement_type'],
-            calculation_type=data['calculation_type'],
             weight_value=data['weight_value'],
             kpi_description=data.get('kpi_description',''),
             department_uuid=data.get('department_uuid'),
@@ -130,8 +133,7 @@ class KPIDefinitionHandler:
             filters['department_uuid'] = str(request.department_scope.uuid)
 
         kpis = KPIService().get_all_kpis(**filters)
-        data = [cls._serialize(kpi) for kpi in kpis]
-        return ResponseProvider.success(data=data)
+        return Paginator.paginate(kpis, request, cls._serialize)
 
 #--------------------------------------------------------------
 #  KPI ASSIGNMENT HANDLER
@@ -241,8 +243,7 @@ class KPIAssignmentHandler:
                 filters['department_uuid'] = str(request.user.department.uuid)
 
         assignments = KPIAssignmentService().get_all_assignments(**filters)
-        data = [cls._serialize(a) for a in assignments]
-        return ResponseProvider.success(data=data)
+        return Paginator.paginate(assignments, request, cls._serialize)
 
     @staticmethod
     def _serialize(assignment) -> dict:
@@ -451,11 +452,13 @@ class  KPIResultService:
                 return ResponseProvider.forbidden(message='Approved results cannot be deleted')
             assignment = result.kpi_assignment
             manager_dept = request.user.department
-            result_dept = (
-                assignment.assigned_to.department if assignment.assigned_to else
-                assignment.assigned_department if assignment.assigned_department else
-                assignment.assigned_team.department if assignment.assigned_team else None
-            )
+            result_dept = None
+            if assignment:
+                result_dept = (
+                    assignment.assigned_to.department if assignment.assigned_to else
+                    assignment.assigned_department if assignment.assigned_department else
+                    assignment.assigned_team.department if assignment.assigned_team else None
+                )
             if result_dept != manager_dept:
                 return ResponseProvider.forbidden(message='You can only delete results within your department')
         elif role.lower() == 'employee':
@@ -466,10 +469,8 @@ class  KPIResultService:
         else:
             return ResponseProvider.forbidden(message='You do not have permission to delete results')
 
-        from Base.models import Status
-        from django.utils import timezone
         active_status = Status.objects.filter(code='ACT').first()
-        if active_status:
+        if active_status and result.kpi_assignment:
             result.kpi_assignment.status = active_status
             result.kpi_assignment.save(update_fields=['status'])
 
@@ -478,8 +479,9 @@ class  KPIResultService:
         result.deleted_by = request.user
         result.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by'])
 
+        kpi_name = result.kpi_assignment.kpi.kpi_name if result.kpi_assignment else 'deleted KPI'
         return ResponseProvider.success(
-            message=f'Result for "{result.kpi_assignment.kpi.kpi_name}" deleted successfully'
+            message=f'Result for "{kpi_name}" deleted successfully'
         )
 
     @classmethod
@@ -517,10 +519,6 @@ class  KPIResultService:
                 )
 
         # Save result and wrap all writes in atomic transaction
-        from django.db import transaction
-        from Base.models import Status
-        from performance.models import Notification
-        from performance.email_service import EmailNotificationService
 
         with transaction.atomic():
             result.approval_status = approval_status
@@ -538,25 +536,18 @@ class  KPIResultService:
             # Build notification message
             employee = result.submitted_by or assignment.assigned_to
             if employee:
-                if approval_status == 'approved':
-                    message = (
-                        f'Your result for "{kpi.kpi_name}" has been approved. '
-                        f'Score: {result.calculated_score}% — Rated {result.rating}.'
-                    )
-                else:
+                if approval_status == 'rejected':
                     message = (
                         f'Your result for "{kpi.kpi_name}" has been rejected by your manager. '
                         f'{("Reason: " + manager_comment + ".") if manager_comment else ""} '
                         f'Please resubmit with the correct value.'
                     )
-
-                # In-app notification
-                Notification.objects.create(
-                    recipient=employee,
-                    notification_type='kpi_alert',
-                    message=message,
-                    is_read=False,
-                )
+                    Notification.objects.create(
+                        recipient=employee,
+                        notification_type='kpi_alert',
+                        message=message,
+                        is_read=False,
+                    )
 
                 # Send email outside transaction , email failure should not rollback DB
                 try:
@@ -603,15 +594,15 @@ class  KPIResultService:
 
     @staticmethod
     def _serialize(result) -> dict:
-        kpi        = result.kpi_assignment.kpi
         assignment = result.kpi_assignment
+        kpi = assignment.kpi if assignment else None
         return {
-            'uuid':                 str(result.uuid),
-            'assignment_uuid':      str(assignment.uuid),
-            'kpi_name':             kpi.kpi_name,
-            'kpi_uuid':             str(kpi.uuid),
-            'target':               float(kpi.max_threshold) if kpi.max_threshold else None,
-            'weight':               float(kpi.weight_value) if kpi.weight_value else None,
+            'uuid': str(result.uuid),
+            'assignment_uuid': str(assignment.uuid) if assignment else None,
+            'kpi_name': kpi.kpi_name if kpi else 'Deleted KPI',
+            'kpi_uuid': str(kpi.uuid) if kpi else None,
+            'target': float(kpi.max_threshold) if kpi and kpi.max_threshold else None,
+            'weight': float(kpi.weight_value) if kpi and kpi.weight_value else None,
             'actual_value':         str(result.actual_value),
             'calculated_score':     str(result.calculated_score) if result.calculated_score else None,
             'rating':               result.rating,
@@ -623,10 +614,15 @@ class  KPIResultService:
             'period_end':           str(assignment.period_end) if assignment.period_end else None,
             'assigned_to_uuid':     str(assignment.assigned_to.uuid) if assignment.assigned_to else None,
             'assigned_to_username': assignment.assigned_to.username if assignment.assigned_to else None,
-            'department':           assignment.assigned_to.department.name if assignment.assigned_to and assignment.assigned_to.department else None,
+            'department': (
+    assignment.assigned_to.department.name if assignment.assigned_to and assignment.assigned_to.department else
+    assignment.assigned_team.department.name if assignment.assigned_team and assignment.assigned_team.department else
+    assignment.assigned_department.name if assignment.assigned_department else
+    None
+),
             'submitted_by':         result.submitted_by.username if result.submitted_by else None,
             'recorded_by_uuid':     str(result.recorded_by.uuid) if result.recorded_by else None,
             'created_at':           str(result.created_at),
             'updated_at':           str(result.updated_at),
-            'measurement_type' : kpi.measurement_type,
+            'measurement_type' : kpi.measurement_type if kpi else None,
         }
