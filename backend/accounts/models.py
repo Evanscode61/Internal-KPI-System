@@ -11,6 +11,7 @@ class User(AbstractUser, BaseModel):
     team         = models.ForeignKey(Team, on_delete=models.SET_NULL, null=True, blank=True)
     phone_number = models.CharField(max_length=11, blank=True)
     status       = models.ForeignKey(Status, on_delete=models.SET_NULL, null=True, blank=True)
+    profile_picture = models.ImageField(upload_to = 'profiles/', null=True, blank=True)
 
     class Meta:
         db_table = 'users'

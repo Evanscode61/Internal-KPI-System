@@ -1,5 +1,4 @@
-from django.shortcuts import render
-from django.http import JsonResponse
+
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth import authenticate, get_user_model
 from accounts.jwt_utils import generate_access_token, generate_refresh_token, decode_token
@@ -9,6 +8,8 @@ from services.services import UserService, RoleService, AuthService
 from services.utils.response_provider import ResponseProvider
 from utils.decorators.allowed_http_methods import allowed_http_methods
 from utils.decorators.rbac import require_roles
+from services.services import OTPService, TransactionLogService
+from django.conf import settings
 
 User = get_user_model()
 user_service = UserService()
@@ -147,8 +148,6 @@ def reset_password_view(request):
         if not username:
             return ResponseProvider.bad_request(error="username is required")
 
-        from services.services import OTPService, TransactionLogService
-        from django.conf import settings
 
         # no OTP provided → generate and send
         if not otp_code:
@@ -237,7 +236,7 @@ def request_otp_view(request):
 # ─── USER VIEWS ───────────────────────────────────────────────────────────────
 
 @csrf_exempt
-@require_roles('admin')
+@require_roles('admin','hr')
 def create_user_view(request):
     """Create a user directly (POST). Admin use."""
     if request.method != "POST":
@@ -279,7 +278,7 @@ def list_users_view(request):
 
 
 @csrf_exempt
-@require_roles('admin')
+@require_roles('admin','hr')
 def delete_user_view(request, user_uuid):
     """Delete a user by UUID (DELETE). Admin only."""
     if request.method != "DELETE":
@@ -291,7 +290,7 @@ def delete_user_view(request, user_uuid):
 
 
 @csrf_exempt
-@require_roles('admin')
+@require_roles('admin','hr')
 def update_user_view(request, user_uuid):
     """Update a user's fields (PUT / PATCH). Admin only."""
     if request.method not in ("PUT", "PATCH"):
@@ -451,3 +450,147 @@ def _parse_body(request) -> dict:
         return json.loads(request.body or "{}")
     except json.JSONDecodeError:
         raise ValueError("Request body must be valid JSON and Content-Type must be application/json")
+@csrf_exempt
+@allowed_http_methods(['GET', 'PATCH'])
+@require_roles('admin', 'hr', 'Tech_Line_Manager', 'Business_Line_Manager', 'employee')
+def my_profile_view(request):
+    """
+    GET return logged in user profile
+    PATCH update first_name, last_name, email only
+    """
+    user = request.user
+
+    if request.method == 'GET':
+        return ResponseProvider.success(
+            message='Profile retrieved successfully',
+            data=_serialize_profile(request, user)
+        )
+
+    # PATCH — update allowed fields only
+    try:
+        body = _parse_body(request)
+
+        allowed_fields = {'first_name', 'last_name', 'email'}
+        for field, value in body.items():
+            if field in allowed_fields:
+                # Validate email uniqueness
+                if field == 'email' and value != user.email:
+                    if User.objects.filter(email=value).exclude(uuid=user.uuid).exists():
+                        return ResponseProvider.bad_request(
+                            error='Email address already in use'
+                        )
+                setattr(user, field, value)
+
+        user.save()
+
+        try:
+            from services.services import TransactionLogService
+            TransactionLogService.log(
+                event_code   = 'user_updated',
+                triggered_by = user,
+                entity       = user,
+                status_code  = 'ACT',
+                message      = f'User "{user.username}" updated their profile',
+                ip_address   = request.META.get('REMOTE_ADDR'),
+                metadata     = {'updated_fields': list(body.keys())},
+            )
+        except Exception as log_err:
+            print(f'[TransactionLog ERROR] {log_err}')
+
+        return ResponseProvider.success(
+            message='Profile updated successfully',
+            data=_serialize_profile(request, user)
+        )
+
+    except ValueError as e:
+        return ResponseProvider.bad_request(error=str(e))
+    except Exception as e:
+        return ResponseProvider.handle_exception(e)
+
+
+@csrf_exempt
+@allowed_http_methods(['POST'])
+@require_roles('admin', 'hr', 'Tech_Line_Manager', 'Business_Line_Manager', 'employee')
+def upload_profile_picture_view(request):
+    """Upload a profile picture for the logged in user."""
+    try:
+        if 'profile_picture' not in request.FILES:
+            return ResponseProvider.bad_request(error='No image file provided')
+
+        file = request.FILES['profile_picture']
+
+        # Validate file type
+        allowed_types = ['image/jpeg', 'image/png', 'image/webp']
+        if file.content_type not in allowed_types:
+            return ResponseProvider.bad_request(
+                error='Only JPEG, PNG and WebP images are allowed'
+            )
+
+        # Validate file size — max 2MB
+        if file.size > 2 * 1024 * 1024:
+            return ResponseProvider.bad_request(
+                error='Image size must be under 2MB'
+            )
+
+        user = request.user
+
+        # Delete old picture if exists
+        if user.profile_picture:
+            user.profile_picture.delete(save=False)
+
+        user.profile_picture = file
+        user.save(update_fields=['profile_picture'])
+
+        return ResponseProvider.success(
+            message='Profile picture uploaded successfully',
+            data={
+                'profile_picture_url': request.build_absolute_uri(
+                    user.profile_picture.url
+                )
+            }
+        )
+
+    except Exception as e:
+        return ResponseProvider.handle_exception(e)
+
+
+@csrf_exempt
+@allowed_http_methods(['DELETE'])
+@require_roles('admin', 'hr', 'Tech_Line_Manager', 'Business_Line_Manager', 'employee')
+def delete_profile_picture_view(request):
+    """Remove the profile picture for the logged in user."""
+    try:
+        user = request.user
+        if user.profile_picture:
+            user.profile_picture.delete(save=True)
+            return ResponseProvider.success(
+                message='Profile picture removed successfully'
+            )
+        return ResponseProvider.bad_request(
+            error='No profile picture to remove'
+        )
+    except Exception as e:
+        return ResponseProvider.handle_exception(e)
+
+
+def _serialize_profile(request, user) -> dict:
+    """Serialize user profile data."""
+    picture_url = None
+    if user.profile_picture:
+        try:
+            picture_url = request.build_absolute_uri(user.profile_picture.url)
+        except Exception:
+            picture_url = None
+
+    return {
+        'uuid':                str(user.uuid),
+        'username':            user.username,
+        'first_name':          user.first_name,
+        'last_name':           user.last_name,
+        'email':               user.email,
+        'phone_number':        user.phone_number,
+        'role':                user.role.name       if user.role       else None,
+        'department':          user.department.name if user.department else None,
+        'team':                user.team.team_name  if user.team       else None,
+        'profile_picture_url': picture_url,
+    }
