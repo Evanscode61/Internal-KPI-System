@@ -135,11 +135,6 @@ class DashboardService:
         results_qs = cls._filter_results(period_start, period_end).filter(
             submitted_by=user
         )
-        # For counting submissions — include pending and rejected, not just approved
-        submitted_qs = KPIResults.objects.filter(
-            submitted_by=user,
-            is_deleted=False,
-        )
 
         assignment_filter = Q(assigned_to=user)
         if user.team:
@@ -149,6 +144,14 @@ class DashboardService:
 
         assignments_qs = cls._filter_assignments(period_start, period_end).filter(
             assignment_filter
+        )
+
+        # For counting submissions — scoped to the same assignments as assignments_qs
+        submitted_qs = KPIResults.objects.filter(
+            submitted_by=user,
+            is_deleted=False,
+            kpi_assignment__isnull=False,
+            kpi_assignment__in=assignments_qs,
         )
 
         summaries = PerformanceSummary.objects.filter(
@@ -190,7 +193,12 @@ class DashboardService:
         average score, and rating distribution.
         """
         total_assigned  = assignments_qs.count()
-        total_submitted = results_qs.count()
+        # Count assignments that have at least one approved result — not individual submissions
+        total_submitted = assignments_qs.filter(
+            results__isnull=False,
+            results__approval_status='approved',
+            results__is_deleted=False,
+        ).distinct().count()
         avg_score       = results_qs.aggregate(
                               avg=Avg('calculated_score')
                           )['avg']
@@ -471,7 +479,7 @@ class DashboardService:
                 'rating': DashboardService._score_to_rating(
                     float(row['avg_score'])
                 ),
-                'worst_kpi_name': worst.kpi_assignment.kpi.kpi_name if worst else None,
+                'worst_kpi_name': worst.kpi_assignment.kpi.kpi_name if worst and worst.kpi_assignment else None,
                 'worst_kpi_score': round(float(worst.calculated_score), 1) if worst else None,
                 'worst_kpi_rating': worst.rating if worst else None,
             })
@@ -503,7 +511,8 @@ class DashboardService:
         qs = KPIResults.objects.filter(
             calculated_score__isnull=False,
             is_deleted=False,
-            approval_status='approved'
+            approval_status='approved',
+            kpi_assignment__isnull=False
         )
         if period_start:
             qs = qs.filter(kpi_assignment__period_end__gte=period_start)

@@ -1,6 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Avg
+from kpis.models import KPIResults
 from performance.models import KPIAlert, Notification
 from performance.email_service import EmailNotificationService
+from Base.models import Status
 
 User = get_user_model()
 
@@ -11,13 +14,12 @@ class AlertService:
     only for underperformance ratings. For all other ratings an
     informational notification is sent directly to the employee.
 
-    Alert routing by assignment type:
-        Individual  — employee notified, manager notified
-        Team        — submitting member notified, manager notified
-        Department  — submitting member notified, manager notified
+    Rule — same for all assignment types (individual, team, department):
+        Submitter notified — in-app + email
+        Line manager notified — in-app + email
+        HR notified only for systemic unit underperformance
     """
 
-    # Only these ratings create an alert requiring manager action
     ALERT_RATINGS = {'poor', 'needs_improvement'}
 
     @classmethod
@@ -25,7 +27,7 @@ class AlertService:
         """
         Entry point. Called after every KPI result is approved.
         Underperformance ratings create an alert and notify both
-        the employee and manager. All other ratings send an
+        the submitter and manager. All other ratings send an
         informational notification to the employee only.
         """
         assignment = result.kpi_assignment
@@ -48,12 +50,10 @@ class AlertService:
             return None
 
         message = (
-            f'{subject_name} scored {score} on '
-            f"'{assignment.kpi.kpi_name}' — rated {result.rating}."
+            f'{subject_name} scored {float(score):.2f}% on '
+            f"'{assignment.kpi.kpi_name}' — rated {result.rating.replace('_', ' ').title()}."
         )
 
-        # Create the alert record in the database
-        from Base.models import Status
         default_status = Status.objects.filter(code='ACT').first()
 
         alert = KPIAlert.objects.create(
@@ -67,86 +67,35 @@ class AlertService:
             status              = default_status
         )
 
-        # Route to the correct notification handler
+        # Resolve department regardless of assignment type
         if assignment.assigned_to:
-            cls._handle_individual_alert(alert, assignment.assigned_to)
+            department = assignment.assigned_to.department
         elif assignment.assigned_team:
-            cls._handle_team_alert(alert, submitter)
+            department = assignment.assigned_team.department
         elif assignment.assigned_department:
-            cls._handle_department_alert(alert, submitter)
+            department = assignment.assigned_department
+        else:
+            department = None
+
+        # Single handler — same rule for all assignment types
+        cls._handle_underperformance_alert(alert, submitter, department)
+
+        # Check team/department average after alert
+        cls._check_unit_underperformance(result)
 
         return alert
 
-    # ── INDIVIDUAL ASSIGNMENT ─────────────────────────────────────────────────
+    # ── SHARED HELPERS ────────────────────────────────────────────────────────
 
     @classmethod
-    def _handle_individual_alert(cls, alert, user):
+    def _handle_underperformance_alert(cls, alert, submitter, department):
         """
-        Notify the employee their result is underperformance.
-        Always notify their line manager — action is required.
+        Single handler for all assignment types — individual, team and department.
+        Rule is always the same: notify the submitter and their line manager.
+        HR is not notified here — systemic underperformance is handled separately
+        via _check_unit_underperformance.
         """
-        # Notify the employee
-        cls._create_notification(alert, user)
-        try:
-            EmailNotificationService.send_kpi_alert_email(
-                recipient_email = user.email,
-                recipient_name  = user.username,
-                alert           = alert,
-            )
-        except Exception as e:
-            print(f'[Email ERROR] alert email to {user.email}: {e}')
-
-        # Always notify manager — underperformance always requires action
-        cls._notify_line_manager(
-            alert        = alert,
-            subject_name = user.username,
-            department   = user.department,
-        )
-
-    # ── TEAM ASSIGNMENT ───────────────────────────────────────────────────────
-
-    @classmethod
-    def _handle_team_alert(cls, alert, submitter):
-        """
-        Notify the team member who submitted their result is underperformance.
-        Always notify their line manager — action is required.
-        """
-        if not submitter:
-            return
-
-        # Notify the team member who submitted
-        cls._create_notification(alert, submitter)
-        try:
-            EmailNotificationService.send_kpi_alert_email(
-                recipient_email = submitter.email,
-                recipient_name  = submitter.username,
-                alert           = alert,
-            )
-        except Exception as e:
-            print(f'[Email ERROR] alert email to {submitter.email}: {e}')
-
-        # Always notify manager — underperformance always requires action
-        team       = alert.notified_team
-        department = team.department if team else None
-        cls._notify_line_manager(
-            alert        = alert,
-            subject_name = submitter.username,
-            department   = department,
-        )
-
-    # ── DEPARTMENT ASSIGNMENT ─────────────────────────────────────────────────
-
-    @classmethod
-    def _handle_department_alert(cls, alert, submitter):
-        """
-        Notify the employee who submitted their result is underperformance.
-        Always notify the line manager — action is required.
-        """
-        department = alert.notified_department
-        if not department:
-            return
-
-        # Notify the employee who submitted
+        # Notify the submitter
         if submitter:
             cls._create_notification(alert, submitter)
             try:
@@ -158,14 +107,12 @@ class AlertService:
             except Exception as e:
                 print(f'[Email ERROR] alert email to {submitter.email}: {e}')
 
-        # Always notify manager — underperformance always requires action
+        # Always notify line manager — action is required
         cls._notify_line_manager(
             alert        = alert,
-            subject_name = submitter.username if submitter else department.name,
+            subject_name = submitter.username if submitter else 'Unknown',
             department   = department,
         )
-
-    # ── SHARED HELPERS ────────────────────────────────────────────────────────
 
     @staticmethod
     def _notify_line_manager(alert, subject_name, department):
@@ -189,13 +136,8 @@ class AlertService:
             except Exception as e:
                 print(f'[Email ERROR] manager alert email to {manager.email}: {e}')
 
-        # Notify HR , visibility of underperformance
-        try:
-            hr_users = User.objects.filter(role__name__iexact='hr')
-            for hr_user in hr_users:
-                AlertService._create_notification(alert, hr_user)
-        except Exception as e:
-            print(f'[Notification ERROR] HR alert notification: {e}')
+        # HR is notified of systemic underperformance (team/dept level)
+        # via _check_unit_underperformance — not individual alerts
 
     @staticmethod
     def _create_notification(alert, recipient):
@@ -236,11 +178,96 @@ class AlertService:
             Notification.objects.create(
                 recipient         = submitter,
                 notification_type = Notification.NotificationType.KPI_ALERT,
-                message           = (
+                message=(
                     f'Your result for "{assignment.kpi.kpi_name}" '
-                    f'has been approved. Score: {score}% — Rated {label}.'
+                    f'has been approved. Score: {float(score):.2f}% — Rated {label}.'
                 ),
                 is_read = False,
             )
         except Exception as e:
             print(f'[Notification ERROR] {e}')
+
+    @classmethod
+    def _check_unit_underperformance(cls, result):
+        """
+        After a team or department result is approved, recalculate
+        the unit average. If it drops below the satisfactory threshold
+        (60%), notify HR.
+
+        Only fires for team and department assignments — individual
+        underperformance is already handled separately through the
+        existing alert path which notifies the submitter and manager.
+
+        Since every member submits their own result under the shared
+        assignment, the average is recalculated each time a result is
+        approved — giving HR an up-to-date picture of unit performance.
+        """
+        assignment = result.kpi_assignment
+        THRESHOLD  = 60.0
+
+        # ── Team assignment — check team average
+        if assignment.assigned_team:
+            team = assignment.assigned_team
+            avg = KPIResults.objects.filter(
+                kpi_assignment__assigned_team=team,
+                approval_status='approved',
+                is_deleted=False,
+                calculated_score__isnull=False,
+            ).aggregate(avg=Avg('calculated_score'))['avg']
+
+            if avg and float(avg) < THRESHOLD:
+                cls._notify_hr_unit_underperformance(
+                    unit_name=team.team_name,
+                    unit_type='team',
+                    avg_score=round(float(avg), 1),
+                )
+
+        # ── Department assignment — check department average
+        elif assignment.assigned_department:
+            dept = assignment.assigned_department
+            avg = KPIResults.objects.filter(
+                kpi_assignment__assigned_department=dept,
+                approval_status='approved',
+                is_deleted=False,
+                calculated_score__isnull=False,
+            ).aggregate(avg=Avg('calculated_score'))['avg']
+
+            if avg and float(avg) < THRESHOLD:
+                cls._notify_hr_unit_underperformance(
+                    unit_name=dept.name,
+                    unit_type='department',
+                    avg_score=round(float(avg), 1),
+                )
+
+    @staticmethod
+    def _notify_hr_unit_underperformance(unit_name, unit_type, avg_score):
+        """
+        Notify all HR users — both in-app and email — when a team
+        or department average score drops below the satisfactory threshold.
+        """
+        message = (
+            f"{unit_type.title()} performance drop detected — '{unit_name}' "
+            f"average score is {avg_score}% which is below the satisfactory "
+            f"threshold. Consider initiating a performance review or coaching intervention."
+        )
+
+        hr_users = User.objects.filter(role__name__iexact='hr')
+        for hr_user in hr_users:
+            # In-app notification
+            Notification.objects.create(
+                recipient         = hr_user,
+                notification_type = 'kpi_alert',
+                message           = message,
+                is_read           = False,
+            )
+            # Email notification
+            try:
+                EmailNotificationService.send_hr_unit_underperformance_email(
+                    hr_email  = hr_user.email,
+                    hr_name   = hr_user.username,
+                    unit_name = unit_name,
+                    unit_type = unit_type,
+                    avg_score = avg_score,
+                )
+            except Exception as e:
+                print(f'[Email ERROR] HR unit underperformance email to {hr_user.email}: {e}')

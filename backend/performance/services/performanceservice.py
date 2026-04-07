@@ -249,29 +249,34 @@ class PerformanceSummaryService:
         if summary.summary_type == 'individual' and summary.user:
             results = KPIResults.objects.filter(
                 submitted_by=summary.user,
-                kpi_assignment__assigned_to=summary.user,
                 created_at__gte=summary.period_start,
                 created_at__lte=summary.period_end,
                 approval_status='approved',
                 calculated_score__isnull=False,
+                kpi_assignment__isnull=False,
             ).select_related('kpi_assignment__kpi')
 
+
         elif summary.summary_type == 'team' and summary.team:
+
             results = KPIResults.objects.filter(
-                kpi_assignment__assigned_team=summary.team,
+                submitted_by__team=summary.team,
                 created_at__gte=summary.period_start,
                 created_at__lte=summary.period_end,
                 approval_status='approved',
                 calculated_score__isnull=False,
+                kpi_assignment__isnull=False,
             ).select_related('kpi_assignment__kpi')
+
 
         elif summary.summary_type == 'department' and summary.department:
             results = KPIResults.objects.filter(
-                kpi_assignment__assigned_department=summary.department,
+                submitted_by__department=summary.department,
                 created_at__gte=summary.period_start,
                 created_at__lte=summary.period_end,
                 approval_status='approved',
                 calculated_score__isnull=False,
+                kpi_assignment__isnull=False,
             ).select_related('kpi_assignment__kpi')
         else:
             results = []
