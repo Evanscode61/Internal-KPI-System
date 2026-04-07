@@ -55,8 +55,11 @@ class DepartmentServiceHandler:
                 message=f"Department with UUID {dept_uuid} not found")
 
     @classmethod
-    def get_all_departments(cls) -> ResponseProvider:
-        departments = DepartmentService().get_all_departments()
+    def get_all_departments(cls, request=None) -> ResponseProvider:
+        if request and getattr(request, 'is_line_manager', False) and request.department_scope:
+            departments = [request.department_scope]
+        else:
+            departments = DepartmentService().get_all_departments()
         if not departments:
             return ResponseProvider.success(data=[], message="No departments found")
 
