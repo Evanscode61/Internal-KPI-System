@@ -1,6 +1,7 @@
 from Transaction.models import TransactionLog
 from services.services import TransactionLogService
 from services.utils.response_provider import ResponseProvider
+from services.pagination import Paginator
 
 
 class TransactionLogHandler:
@@ -17,8 +18,7 @@ class TransactionLogHandler:
         filters = {k: v for k, v in filters.items() if v is not None}
 
         logs = TransactionLogService.get_all_logs(**filters)
-        data = [cls._serialize(log) for log in logs]
-        return ResponseProvider.success(data=data)
+        return Paginator.paginate(logs, request, cls._serialize)
 
     @classmethod
     def get_log(cls, log_uuid: str) -> ResponseProvider:
